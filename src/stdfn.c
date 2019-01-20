@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard Windows function calls
- * Copyright © 2013-2017 Pete Batard <pete@akeo.ie>
+ * Copyright © 2013-2018 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,6 +35,16 @@
 int  nWindowsVersion = WINDOWS_UNDEFINED;
 int  nWindowsBuildNumber = -1;
 char WindowsVersionStr[128] = "Windows ";
+
+// __popcnt16, __popcnt, __popcnt64 are not available for ARM :(
+uint8_t popcnt8(uint8_t val)
+{
+	static const uint8_t nibble_lookup[16] = {
+		0, 1, 1, 2, 1, 2, 2, 3,
+		1, 2, 2, 3, 2, 3, 3, 4
+	};
+	return nibble_lookup[val & 0x0F] + nibble_lookup[val >> 4];
+}
 
 /*
  * Hash table functions - modified From glibc 2.3.2:
@@ -220,6 +230,25 @@ BOOL is_x64(void)
 	return ret;
 }
 
+int GetCpuArch(void)
+{
+	SYSTEM_INFO info = { 0 };
+	GetNativeSystemInfo(&info);
+	switch (info.wProcessorArchitecture) {
+	case PROCESSOR_ARCHITECTURE_AMD64:
+		return CPU_ARCH_X86_64;
+	case PROCESSOR_ARCHITECTURE_INTEL:
+		return CPU_ARCH_X86_64;
+	// TODO: Set this back to PROCESSOR_ARCHITECTURE_ARM64 when the MinGW headers have it
+	case 12:
+		return CPU_ARCH_ARM_64;
+	case PROCESSOR_ARCHITECTURE_ARM:
+		return CPU_ARCH_ARM_32;
+	default:
+		return CPU_ARCH_UNDEFINED;
+	}
+}
+
 // From smartmontools os_win32.cpp
 void GetWindowsVersion(void)
 {
@@ -370,9 +399,21 @@ int32_t StrArrayAdd(StrArray* arr, const char* str, BOOL duplicate)
 	return arr->Index++;
 }
 
+int32_t StrArrayFind(StrArray* arr, const char* str)
+{
+	uint32_t i;
+	if ((str == NULL) || (arr == NULL) || (arr->String == NULL))
+		return -1;
+	for (i = 0; i<arr->Index; i++) {
+		if (strcmp(arr->String[i], str) == 0)
+			return (int32_t)i;
+	}
+	return -1;
+}
+
 void StrArrayClear(StrArray* arr)
 {
-	size_t i;
+	uint32_t i;
 	if ((arr == NULL) || (arr->String == NULL))
 		return;
 	for (i=0; i<arr->Index; i++) {
@@ -445,7 +486,7 @@ static PSID GetSID(void) {
  */
 BOOL FileIO(BOOL save, char* path, char** buffer, DWORD* size)
 {
-	SECURITY_ATTRIBUTES s_attr, *ps = NULL;
+	SECURITY_ATTRIBUTES s_attr, *sa = NULL;
 	SECURITY_DESCRIPTOR s_desc;
 	PSID sid = NULL;
 	HANDLE handle;
@@ -460,7 +501,7 @@ BOOL FileIO(BOOL save, char* path, char** buffer, DWORD* size)
 		s_attr.nLength = sizeof(SECURITY_ATTRIBUTES);
 		s_attr.bInheritHandle = FALSE;
 		s_attr.lpSecurityDescriptor = &s_desc;
-		ps = &s_attr;
+		sa = &s_attr;
 	} else {
 		uprintf("Could not set security descriptor: %s\n", WindowsErrorString());
 	}
@@ -469,7 +510,7 @@ BOOL FileIO(BOOL save, char* path, char** buffer, DWORD* size)
 		*buffer = NULL;
 	}
 	handle = CreateFileU(path, save?GENERIC_WRITE:GENERIC_READ, FILE_SHARE_READ,
-		ps, save?CREATE_ALWAYS:OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		sa, save?CREATE_ALWAYS:OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
 	if (handle == INVALID_HANDLE_VALUE) {
 		uprintf("Could not %s file '%s'\n", save?"create":"open", path);
@@ -628,19 +669,23 @@ static BOOL CALLBACK EnumFontFamExProc(const LOGFONTA *lpelfe,
 	return TRUE;
 }
 
-BOOL IsFontAvailable(const char* font_name) {
+BOOL IsFontAvailable(const char* font_name)
+{
+	BOOL r;
 	LOGFONTA lf = { 0 };
 	HDC hDC = GetDC(hMainDialog);
 
 	if (font_name == NULL) {
-		ReleaseDC(hMainDialog, hDC);
+		safe_release_dc(hMainDialog, hDC);
 		return FALSE;
 	}
 
 	lf.lfCharSet = DEFAULT_CHARSET;
 	safe_strcpy(lf.lfFaceName, LF_FACESIZE, font_name);
 
-	return EnumFontFamiliesExA(hDC, &lf, EnumFontFamExProc, 0, 0);
+	r = EnumFontFamiliesExA(hDC, &lf, EnumFontFamExProc, 0, 0);
+	safe_release_dc(hMainDialog, hDC);
+	return r;
 }
 
 /*
@@ -904,36 +949,4 @@ char* GetCurrentMUI(void)
 		static_strcpy(mui_str, "en-US");
 	}
 	return mui_str;
-}
-
-char* GetMuiString(char* szModuleName, UINT uID)
-{
-	HMODULE hModule;
-	char path[MAX_PATH], *str;
-	wchar_t* wstr;
-	void* ptr;
-	int len;
-	static_sprintf(path, "%s\\%s\\%s.mui", system_dir, GetCurrentMUI(), szModuleName);
-	// If the file doesn't exist, fall back to en-US
-	if (!PathFileExistsU(path))
-		static_sprintf(path, "%s\\en-US\\%s.mui", system_dir, szModuleName);
-	hModule = LoadLibraryExA(path, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE);
-	if (hModule == NULL) {
-		uprintf("Could not load '%s': %s", path, WindowsErrorString());
-		return NULL;
-	}
-	// Calling LoadStringW with last parameter 0 returns the length of the string (without NUL terminator)
-	len = LoadStringW(hModule, uID, (LPWSTR)(&ptr), 0);
-	if (len <= 0) {
-		if (GetLastError() == ERROR_SUCCESS)
-			SetLastError(ERROR_RESOURCE_NAME_NOT_FOUND);
-		uprintf("Could not find string ID %d in '%s': %s", uID, path, WindowsErrorString());
-		return NULL;
-	}
-	len += 1;
-	wstr = calloc(len, sizeof(wchar_t));
-	len = LoadStringW(hModule, uID, wstr, len);
-	str = wchar_to_utf8(wstr);
-	free(wstr);
-	return str;
 }

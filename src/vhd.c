@@ -86,8 +86,9 @@ typedef struct vhd_footer {
 #pragma pack(pop)
 
 // WIM API Prototypes
-#define WIM_GENERIC_READ	GENERIC_READ
-#define WIM_OPEN_EXISTING	OPEN_EXISTING
+#define WIM_GENERIC_READ            GENERIC_READ
+#define WIM_OPEN_EXISTING           OPEN_EXISTING
+#define WIM_UNDOCUMENTED_BULLSHIT   0x20000000
 PF_TYPE_DECL(WINAPI, HANDLE, WIMCreateFile, (PWSTR, DWORD, DWORD, DWORD, DWORD, PDWORD));
 PF_TYPE_DECL(WINAPI, BOOL, WIMSetTemporaryPath, (HANDLE, PWSTR));
 PF_TYPE_DECL(WINAPI, HANDLE, WIMLoadImage, (HANDLE, DWORD));
@@ -287,7 +288,7 @@ BOOL IsBootableImage(const char* path)
 
 	is_bootable_img = (BOOLEAN)IsCompressedBootableImage(path);
 	if (img_report.compression_type == BLED_COMPRESSION_NONE)
-		is_bootable_img = (BOOLEAN)AnalyzeMBR(handle, "  Image");
+		is_bootable_img = (BOOLEAN)AnalyzeMBR(handle, "  Image", FALSE);
 
 	if (!GetFileSizeEx(handle, &liImageSize)) {
 		uprintf("  Could not get image size: %s", WindowsErrorString());
@@ -396,7 +397,12 @@ BOOL WimExtractFile_API(const char* image, int index, const char* src, const cha
 		goto out;
 	}
 
-	hWim = pfWIMCreateFile(wimage, WIM_GENERIC_READ, WIM_OPEN_EXISTING, 0, 0, &dw);
+	// Thanks to dism++ for figuring out that you can use UNDOCUMENTED FLAG 0x20000000
+	// to open newer install.wim/install.esd images, without running into obnoxious error:
+	// [0x0000000B] An attempt was made to load a program with an incorrect format.
+	// No thanks to Microsoft for NOT DOCUMENTING THEIR UTTER BULLSHIT with the WIM API!
+	hWim = pfWIMCreateFile(wimage, WIM_GENERIC_READ, WIM_OPEN_EXISTING,
+		(img_report.wininst_version >= SPECIAL_WIM_VERSION) ? WIM_UNDOCUMENTED_BULLSHIT : 0, 0, NULL);
 	if (hWim == NULL) {
 		uprintf("  Could not access image: %s", WindowsErrorString());
 		goto out;
@@ -564,7 +570,6 @@ DWORD WINAPI WimProgressCallback(DWORD dwMsgId, WPARAM wParam, LPARAM lParam, PV
 {
 	PBOOL pbCancel = NULL;
 	PWIN32_FIND_DATA pFileData;
-	char* str = NULL;
 	const char* level = NULL;
 	uint64_t size;
 	float apply_percent;
@@ -582,8 +587,7 @@ DWORD WINAPI WimProgressCallback(DWORD dwMsgId, WPARAM wParam, LPARAM lParam, PV
 		// The amount of files processed is overwhelming (16k+ for a typical image),
 		// and trying to display it *WILL* slow us down, so we don't.
 #if 0
-		str = wchar_to_utf8((PWSTR)wParam);
-		uprintf("%s", str);
+		uprintf("%S", (PWSTR)wParam);
 		PrintStatus(0, MSG_000, str);	// MSG_000 is "%s"
 #endif
 		if (count_files) {
@@ -612,13 +616,12 @@ DWORD WINAPI WimProgressCallback(DWORD dwMsgId, WPARAM wParam, LPARAM lParam, PV
 		}
 		break;
 	case WIM_MSG_FILEINFO:
-		str = wchar_to_utf8((PWSTR)wParam);
 		pFileData = (PWIN32_FIND_DATA)lParam;
 		if (pFileData->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-			uprintf("Creating: %s", str);
+			uprintf("Creating: %S", (PWSTR)wParam);
 		} else {
 			size = (((uint64_t)pFileData->nFileSizeHigh) << 32) + pFileData->nFileSizeLow;
-			uprintf("Extracting: %s (%s)", str, SizeToHumanReadable(size, FALSE, FALSE));
+			uprintf("Extracting: %S (%s)", (PWSTR)wParam, SizeToHumanReadable(size, FALSE, FALSE));
 		}
 		break;
 	case WIM_MSG_RETRY:
@@ -632,12 +635,10 @@ DWORD WINAPI WimProgressCallback(DWORD dwMsgId, WPARAM wParam, LPARAM lParam, PV
 		// fall through
 	case WIM_MSG_ERROR:
 		if (level == NULL) level = "error";
-		str = wchar_to_utf8((PWSTR)wParam);
 		SetLastError((DWORD)lParam);
-		uprintf("Apply %s: %s [err = %d]\n", level, str, WindowsErrorString());
+		uprintf("Apply %s: %S [err = %d]\n", level, (PWSTR)wParam, WindowsErrorString());
 		break;
 	}
-	safe_free(str);
 
 	return IS_ERROR(FormatStatus)?WIM_MSG_ABORT_IMAGE:WIM_MSG_SUCCESS;
 }
@@ -648,7 +649,6 @@ DWORD WINAPI WimProgressCallback(DWORD dwMsgId, WPARAM wParam, LPARAM lParam, PV
 static DWORD WINAPI WimApplyImageThread(LPVOID param)
 {
 	BOOL r = FALSE;
-	DWORD dw = 0;
 	HANDLE hWim = NULL;
 	HANDLE hImage = NULL;
 	wchar_t wtemp[MAX_PATH] = {0};
@@ -675,7 +675,8 @@ static DWORD WINAPI WimApplyImageThread(LPVOID param)
 		goto out;
 	}
 
-	hWim = pfWIMCreateFile(wimage, WIM_GENERIC_READ, WIM_OPEN_EXISTING, 0, 0, &dw);
+	hWim = pfWIMCreateFile(wimage, WIM_GENERIC_READ, WIM_OPEN_EXISTING,
+		(img_report.wininst_version >= SPECIAL_WIM_VERSION) ? WIM_UNDOCUMENTED_BULLSHIT : 0, 0, NULL);
 	if (hWim == NULL) {
 		uprintf("  Could not access image: %s", WindowsErrorString());
 		goto out;

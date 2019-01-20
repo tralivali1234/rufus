@@ -13,6 +13,7 @@
 *.lo
 *.log
 *.mac
+*.mo
 *.ncb
 *.o
 *.obj
@@ -45,7 +46,10 @@ config.status
 config.sub
 cov-int
 cov-int.zip
-embedded.loc
-rufus_files
 depcomp
+embedded.loc
+res/loc/pollock/.vs
+res/loc/pollock/bin
+res/loc/pollock/obj
+rufus_files
 stamp-h1

@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * ISO file extraction
- * Copyright © 2011-2016 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2018 Pete Batard <pete@akeo.ie>
  * Based on libcdio's iso & udf samples:
  * Copyright © 2003-2014 Rocky Bernstein <rocky@gnu.org>
  *
@@ -70,32 +70,33 @@ extern BOOL preserve_timestamps;
 BOOL enable_iso = TRUE, enable_joliet = TRUE, enable_rockridge = TRUE, has_ldlinux_c32;
 #define ISO_BLOCKING(x) do {x; iso_blocking_status++; } while(0)
 static const char* psz_extract_dir;
+static const char* bootmgr_name = "bootmgr";
 static const char* bootmgr_efi_name = "bootmgr.efi";
 static const char* grldr_name = "grldr";
 static const char* ldlinux_name = "ldlinux.sys";
 static const char* ldlinux_c32 = "ldlinux.c32";
 static const char* efi_dirname = "/efi/boot";
-static const char* efi_img_name = "efi.img";	// Used by Debian Live ISOHybrids
 static const char* efi_bootname[] = { "bootia32.efi", "bootia64.efi", "bootx64.efi", "bootarm.efi", "bootaa64.efi", "bootebc.efi" };
-static const char* install_wim_path = "/sources";
-static const char* install_wim_name[] = { "install.wim", "install.swm" };
+static const char* sources_str = "/sources";
+static const char* wininst_name[] = { "install.wim", "install.esd", "install.swm" };
 // We only support GRUB/BIOS (x86) that uses a standard config dir (/boot/grub/i386-pc/)
 // If the disc was mastered properly, GRUB/EFI will take care of itself
 static const char* grub_dirname = "/boot/grub/i386-pc";
 static const char* grub_cfg = "grub.cfg";
 static const char* syslinux_cfg[] = { "isolinux.cfg", "syslinux.cfg", "extlinux.conf" };
 static const char* isolinux_bin[] = { "isolinux.bin", "boot.bin" };
-static const char* pe_dirname[] = { "/i386", "/minint" };
+static const char* pe_dirname[] = { "/i386", "/amd64", "/minint" };
 static const char* pe_file[] = { "ntdetect.com", "setupldr.bin", "txtsetup.sif" };
 static const char* reactos_name = "setupldr.sys"; // TODO: freeldr.sys doesn't seem to work
 static const char* kolibri_name = "kolibri.img";
 static const char* autorun_name = "autorun.inf";
+static const char* casper_name = "CASPER";
 static const char* stupid_antivirus = "  NOTE: This is usually caused by a poorly designed security solution. "
-	"See https://rufus.akeo.ie/compatibility.\r\n  This file will be skipped for now, but you should really "
+	"See https://goo.gl/QTobxX.\r\n  This file will be skipped for now, but you should really "
 	"look into using a *SMARTER* antivirus solution.";
 const char* old_c32_name[NB_OLD_C32] = OLD_C32_NAMES;
 static const int64_t old_c32_threshold[NB_OLD_C32] = OLD_C32_THRESHOLD;
-static uint8_t i_joliet_level = 0;
+static uint8_t joliet_level = 0;
 static uint64_t total_blocks, nb_blocks;
 static BOOL scan_only = FALSE;
 static StrArray config_path, isolinux_path;
@@ -141,7 +142,7 @@ static void log_handler (cdio_log_level_t level, const char *message)
  * Scan and set ISO properties
  * Returns true if the the current file does not need to be processed further
  */
-static BOOL check_iso_props(const char* psz_dirname, int64_t i_file_length, const char* psz_basename,
+static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const char* psz_basename,
 	const char* psz_fullpath, EXTRACT_PROPS *props)
 {
 	size_t i, j, len;
@@ -158,7 +159,7 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t i_file_length, cons
 
 	// Check for an old incompatible c32 file anywhere
 	for (i=0; i<NB_OLD_C32; i++) {
-		if ((safe_stricmp(psz_basename, old_c32_name[i]) == 0) && (i_file_length <= old_c32_threshold[i]))
+		if ((safe_stricmp(psz_basename, old_c32_name[i]) == 0) && (file_length <= old_c32_threshold[i]))
 			props->is_old_c32[i] = TRUE;
 	}
 
@@ -185,14 +186,20 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t i_file_length, cons
 
 		// Check for various files in root (psz_dirname = "")
 		if ((psz_dirname != NULL) && (psz_dirname[0] == 0)) {
-			if (safe_strnicmp(psz_basename, bootmgr_efi_name, safe_strlen(bootmgr_efi_name)-5) == 0) {
+			if (safe_stricmp(psz_basename, bootmgr_name) == 0) {
 				img_report.has_bootmgr = TRUE;
+			}
+			if (safe_stricmp(psz_basename, bootmgr_efi_name) == 0) {
+				img_report.has_bootmgr_efi = TRUE;
 			}
 			if (safe_stricmp(psz_basename, grldr_name) == 0) {
 				img_report.has_grub4dos = TRUE;
 			}
 			if (safe_stricmp(psz_basename, kolibri_name) == 0) {
 				img_report.has_kolibrios = TRUE;
+			}
+			if (safe_stricmp(psz_basename, casper_name) == 0) {
+				img_report.has_casper = TRUE;
 			}
 			if (safe_stricmp(psz_basename, bootmgr_efi_name) == 0) {
 				img_report.has_efi |= 1;
@@ -203,8 +210,10 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t i_file_length, cons
 		if ((img_report.reactos_path[0] == 0) && (safe_stricmp(psz_basename, reactos_name) == 0))
 			static_strcpy(img_report.reactos_path, psz_fullpath);
 
-		// Check for the first 'efi.img' we can find (that hopefully contains EFI boot files)
-		if (!HAS_EFI_IMG(img_report) && (safe_stricmp(psz_basename, efi_img_name) == 0))
+		// Check for the first 'efi*.img' we can find (that hopefully contains EFI boot files)
+		if (!HAS_EFI_IMG(img_report) && (safe_strlen(psz_basename) >= 7) &&
+			(safe_strnicmp(psz_basename, "efi", 3) == 0) &&
+			(safe_stricmp(&psz_basename[strlen(psz_basename) - 4], ".img") == 0))
 			static_strcpy(img_report.efi_img_path, psz_fullpath);
 
 		// Check for the EFI boot entries
@@ -214,19 +223,24 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t i_file_length, cons
 					img_report.has_efi |= (2<<i);	// start at 2 since "bootmgr.efi" is bit 0
 		}
 
-		// Check for "install.wim" or "install.swm" in "/sources"
-		if ((install_wim_path != NULL) && (safe_stricmp(psz_dirname, install_wim_path) == 0)) {
-			for (i=0; i<ARRAYSIZE(install_wim_name); i++)
-				if (safe_stricmp(psz_basename, install_wim_name[i]) == 0)
-					static_sprintf(img_report.install_wim_path, "?:\\%s\\%s", &install_wim_path[1], install_wim_name[i]);
+		// Check for "install.###" in "###/sources/"
+		if (safe_stricmp(&psz_dirname[max(0, safe_strlen(psz_dirname) - strlen(sources_str))], sources_str) == 0) {
+			for (i = 0; i < ARRAYSIZE(wininst_name); i++) {
+				if (safe_stricmp(psz_basename, wininst_name[i]) == 0) {
+					if (img_report.wininst_index < MAX_WININST) {
+						static_sprintf(img_report.wininst_path[img_report.wininst_index], "?:%s", psz_fullpath);
+						img_report.wininst_index++;
+					}
+				}
+			}
 		}
 
-		// Check for PE (XP) specific files in "/i386" or "/minint"
+		// Check for PE (XP) specific files in "/i386", "/amd64" or "/minint"
 		for (i=0; i<ARRAYSIZE(pe_dirname); i++)
 			if (safe_stricmp(psz_dirname, pe_dirname[i]) == 0)
 				for (j=0; j<ARRAYSIZE(pe_file); j++)
 					if (safe_stricmp(psz_basename, pe_file[j]) == 0)
-						img_report.winpe |= (1<<i)<<(ARRAYSIZE(pe_dirname)*j);
+						img_report.winpe |= (1<<j)<<(ARRAYSIZE(pe_dirname)*i);
 
 		if (props->is_syslinux_cfg) {
 			// Maintain a list of all the isolinux/syslinux configs identified so far
@@ -243,12 +257,12 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t i_file_length, cons
 			if (props->is_old_c32[i])
 				img_report.has_old_c32[i] = TRUE;
 		}
-		if (i_file_length >= FOUR_GIGABYTES)
+		if (file_length >= FOUR_GIGABYTES)
 			img_report.has_4GB_file = TRUE;
 		// Compute projected size needed
-		total_blocks += i_file_length / ISO_BLOCKSIZE;
+		total_blocks += file_length / ISO_BLOCKSIZE;
 		// NB: ISO_BLOCKSIZE = UDF_BLOCKSIZE
-		if ((i_file_length != 0) && (i_file_length % ISO_BLOCKSIZE != 0))
+		if ((file_length != 0) && (file_length % ISO_BLOCKSIZE != 0))
 			total_blocks++;
 		return TRUE;
 	}
@@ -314,7 +328,7 @@ static void fix_config(const char* psz_fullpath, const char* psz_path, const cha
 	free(src);
 }
 
-static void print_extracted_file(char* psz_fullpath, int64_t i_file_length)
+static void print_extracted_file(char* psz_fullpath, int64_t file_length)
 {
 	size_t i, nul_pos;
 
@@ -324,9 +338,9 @@ static void print_extracted_file(char* psz_fullpath, int64_t i_file_length)
 	nul_pos = strlen(psz_fullpath);
 	for (i=0; i<nul_pos; i++)
 		if (psz_fullpath[i] == '/') psz_fullpath[i] = '\\';
-	safe_sprintf(&psz_fullpath[nul_pos], 24, " (%s)", SizeToHumanReadable(i_file_length, TRUE, FALSE));
+	safe_sprintf(&psz_fullpath[nul_pos], 24, " (%s)", SizeToHumanReadable(file_length, TRUE, FALSE));
 	uprintf("Extracting: %s\n", psz_fullpath);
-	safe_sprintf(&psz_fullpath[nul_pos], 24, " (%s)", SizeToHumanReadable(i_file_length, FALSE, FALSE));
+	safe_sprintf(&psz_fullpath[nul_pos], 24, " (%s)", SizeToHumanReadable(file_length, FALSE, FALSE));
 	PrintStatus(0, MSG_000, psz_fullpath);	// MSG_000 is "%s"
 	// ISO9660 cannot handle backslashes
 	for (i=0; i<nul_pos; i++)
@@ -360,6 +374,15 @@ static void __inline set_directory_timestamp(char* path, LPFILETIME creation, LP
 	safe_closehandle(dir_handle);
 }
 
+// Preallocates the target size of a newly created file in order to prevent fragmentation from repeated writes
+static void __inline preallocate_filesize(HANDLE hFile, int64_t file_length)
+{
+	SetFileInformationByHandle(hFile, FileEndOfFileInfo, &file_length, sizeof(file_length));
+
+	// FileAllocationInfo does not require the size to be a multiple of the cluster size; the FS driver takes care of this.
+	SetFileInformationByHandle(hFile, FileAllocationInfo, &file_length, sizeof(file_length));
+}
+
 // Returns 0 on success, nonzero on error
 static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const char *psz_path)
 {
@@ -367,13 +390,13 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 	DWORD buf_size, wr_size, err;
 	EXTRACT_PROPS props;
 	BOOL r, is_identical;
-	int i_length;
+	int length;
 	size_t i;
 	char tmp[128], *psz_fullpath = NULL, *psz_sanpath = NULL;
 	const char* psz_basename;
 	udf_dirent_t *p_udf_dirent2;
 	uint8_t buf[UDF_BLOCKSIZE];
-	int64_t i_read, i_file_length;
+	int64_t read, file_length;
 
 	if ((p_udf_dirent == NULL) || (psz_path == NULL))
 		return 1;
@@ -383,14 +406,14 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 		psz_basename = udf_get_filename(p_udf_dirent);
 		if (strlen(psz_basename) == 0)
 			continue;
-		i_length = (int)(3 + strlen(psz_path) + strlen(psz_basename) + strlen(psz_extract_dir) + 24);
-		psz_fullpath = (char*)calloc(sizeof(char), i_length);
+		length = (int)(3 + strlen(psz_path) + strlen(psz_basename) + strlen(psz_extract_dir) + 24);
+		psz_fullpath = (char*)calloc(sizeof(char), length);
 		if (psz_fullpath == NULL) {
 			uprintf("Error allocating file name");
 			goto out;
 		}
-		i_length = _snprintf(psz_fullpath, i_length, "%s%s/%s", psz_extract_dir, psz_path, psz_basename);
-		if (i_length < 0) {
+		length = _snprintf(psz_fullpath, length, "%s%s/%s", psz_extract_dir, psz_path, psz_basename);
+		if (length < 0) {
 			goto out;
 		}
 		if (udf_is_dir(p_udf_dirent)) {
@@ -409,12 +432,12 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 					goto out;
 			}
 		} else {
-			i_file_length = udf_get_file_length(p_udf_dirent);
-			if (check_iso_props(psz_path, i_file_length, psz_basename, psz_fullpath, &props)) {
+			file_length = udf_get_file_length(p_udf_dirent);
+			if (check_iso_props(psz_path, file_length, psz_basename, psz_fullpath, &props)) {
 				safe_free(psz_fullpath);
 				continue;
 			}
-			print_extracted_file(psz_fullpath, i_file_length);
+			print_extracted_file(psz_fullpath, file_length);
 			for (i=0; i<NB_OLD_C32; i++) {
 				if (props.is_old_c32[i] && use_own_c32[i]) {
 					static_sprintf(tmp, "%s/syslinux-%s/%s", FILES_DIR, embedded_sl_version_str[0], old_c32_name[i]);
@@ -439,23 +462,26 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 					uprintf(stupid_antivirus);
 				else
 					goto out;
-			} else while (i_file_length > 0) {
-				if (FormatStatus) goto out;
-				memset(buf, 0, UDF_BLOCKSIZE);
-				i_read = udf_read_block(p_udf_dirent, buf, 1);
-				if (i_read < 0) {
-					uprintf("  Error reading UDF file %s", &psz_fullpath[strlen(psz_extract_dir)]);
-					goto out;
+			} else {
+				preallocate_filesize(file_handle, file_length);
+				while (file_length > 0) {
+					if (FormatStatus) goto out;
+					memset(buf, 0, UDF_BLOCKSIZE);
+					read = udf_read_block(p_udf_dirent, buf, 1);
+					if (read < 0) {
+						uprintf("  Error reading UDF file %s", &psz_fullpath[strlen(psz_extract_dir)]);
+						goto out;
+					}
+					buf_size = (DWORD)MIN(file_length, read);
+					ISO_BLOCKING(r = WriteFileWithRetry(file_handle, buf, buf_size, &wr_size, WRITE_RETRIES));
+					if (!r) {
+						uprintf("  Error writing file: %s", WindowsErrorString());
+						goto out;
+					}
+					file_length -= read;
+					if (nb_blocks++ % PROGRESS_THRESHOLD == 0)
+						UpdateProgress(OP_DOS, 100.0f*nb_blocks/total_blocks);
 				}
-				buf_size = (DWORD)MIN(i_file_length, i_read);
-				ISO_BLOCKING(r = WriteFileWithRetry(file_handle, buf, buf_size, &wr_size, WRITE_RETRIES));
-				if (!r) {
-					uprintf("  Error writing file: %s", WindowsErrorString());
-					goto out;
-				}
-				i_file_length -= i_read;
-				if (nb_blocks++ % PROGRESS_THRESHOLD == 0)
-					UpdateProgress(OP_DOS, 100.0f*nb_blocks/total_blocks);
 			}
 			if ((preserve_timestamps) && (!SetFileTime(file_handle, to_filetime(udf_get_attribute_time(p_udf_dirent)),
 				to_filetime(udf_get_access_time(p_udf_dirent)), to_filetime(udf_get_modification_time(p_udf_dirent)))))
@@ -490,24 +516,24 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 	DWORD buf_size, wr_size, err;
 	EXTRACT_PROPS props;
 	BOOL is_symlink, is_identical;
-	int i_length, r = 1;
+	int length, r = 1;
 	char tmp[128], psz_fullpath[MAX_PATH], *psz_basename, *psz_sanpath;
 	const char *psz_iso_name = &psz_fullpath[strlen(psz_extract_dir)];
 	unsigned char buf[ISO_BLOCKSIZE];
 	CdioListNode_t* p_entnode;
 	iso9660_stat_t *p_statbuf;
-	CdioList_t* p_entlist;
+	CdioISO9660FileList_t* p_entlist;
 	size_t i, j;
 	lsn_t lsn;
-	int64_t i_file_length;
+	int64_t file_length, extent_length;
 
 	if ((p_iso == NULL) || (psz_path == NULL))
 		return 1;
 
-	i_length = _snprintf(psz_fullpath, sizeof(psz_fullpath), "%s%s/", psz_extract_dir, psz_path);
-	if (i_length < 0)
+	length = _snprintf(psz_fullpath, sizeof(psz_fullpath), "%s%s/", psz_extract_dir, psz_path);
+	if (length < 0)
 		return 1;
-	psz_basename = &psz_fullpath[i_length];
+	psz_basename = &psz_fullpath[length];
 
 	p_entlist = iso9660_ifs_readdir(p_iso, psz_path);
 	if (!p_entlist) {
@@ -525,7 +551,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 		// Rock Ridge requires an exception
 		is_symlink = FALSE;
 		if ((p_statbuf->rr.b3_rock == yep) && enable_rockridge) {
-			safe_strcpy(psz_basename, sizeof(psz_fullpath)-i_length-1, p_statbuf->filename);
+			safe_strcpy(psz_basename, sizeof(psz_fullpath) - length - 1, p_statbuf->filename);
 			if (safe_strlen(p_statbuf->filename) > 64)
 				img_report.has_long_filename = TRUE;
 			// libcdio has a memleak for Rock Ridge symlinks. It doesn't look like there's an easy fix there as
@@ -536,7 +562,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 			if (scan_only)
 				safe_free(p_statbuf->rr.psz_symlink);
 		} else {
-			iso9660_name_translate_ext(p_statbuf->filename, psz_basename, i_joliet_level);
+			iso9660_name_translate_ext(p_statbuf->filename, psz_basename, joliet_level);
 		}
 		if (p_statbuf->type == _STAT_DIR) {
 			if (!scan_only) {
@@ -551,11 +577,11 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 			if (iso_extract_files(p_iso, psz_iso_name))
 				goto out;
 		} else {
-			i_file_length = p_statbuf->total_size;
-			if (check_iso_props(psz_path, i_file_length, psz_basename, psz_fullpath, &props)) {
+			file_length = p_statbuf->size;
+			if (check_iso_props(psz_path, file_length, psz_basename, psz_fullpath, &props)) {
 				continue;
 			}
-			print_extracted_file(psz_fullpath, i_file_length);
+			print_extracted_file(psz_fullpath, file_length);
 			for (i=0; i<NB_OLD_C32; i++) {
 				if (props.is_old_c32[i] && use_own_c32[i]) {
 					static_sprintf(tmp, "%s/syslinux-%s/%s", FILES_DIR, embedded_sl_version_str[0], old_c32_name[i]);
@@ -572,7 +598,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 			if (!is_identical)
 				uprintf("  File name sanitized to '%s'", psz_sanpath);
 			if (is_symlink) {
-				if (i_file_length == 0)
+				if (file_length == 0)
 					uprintf("  Ignoring Rock Ridge symbolic link to '%s'", p_statbuf->rr.psz_symlink);
 				safe_free(p_statbuf->rr.psz_symlink);
 			}
@@ -585,26 +611,29 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 					uprintf(stupid_antivirus);
 				else
 					goto out;
-			} else for (j=0; j<p_statbuf->extents; j++) {
-				i_file_length = p_statbuf->size[j];
-				for (i=0; i_file_length>0; i++) {
-					if (FormatStatus) goto out;
-					memset(buf, 0, ISO_BLOCKSIZE);
-					lsn = p_statbuf->lsn[j] + (lsn_t)i;
-					if (iso9660_iso_seek_read(p_iso, buf, lsn, 1) != ISO_BLOCKSIZE) {
-						uprintf("  Error reading ISO9660 file %s at LSN %lu",
-							psz_iso_name, (long unsigned int)lsn);
-						goto out;
+			} else {
+				preallocate_filesize(file_handle, file_length);
+				for (j=0; j<p_statbuf->extents; j++) {
+					extent_length = p_statbuf->extsize[j];
+					for (i=0; extent_length>0; i++) {
+						if (FormatStatus) goto out;
+						memset(buf, 0, ISO_BLOCKSIZE);
+						lsn = p_statbuf->lsn[j] + (lsn_t)i;
+						if (iso9660_iso_seek_read(p_iso, buf, lsn, 1) != ISO_BLOCKSIZE) {
+							uprintf("  Error reading ISO9660 file %s at LSN %lu",
+								psz_iso_name, (long unsigned int)lsn);
+							goto out;
+						}
+						buf_size = (DWORD)MIN(extent_length, ISO_BLOCKSIZE);
+						ISO_BLOCKING(r = WriteFileWithRetry(file_handle, buf, buf_size, &wr_size, WRITE_RETRIES));
+						if (!r) {
+							uprintf("  Error writing file: %s", WindowsErrorString());
+							goto out;
+						}
+						extent_length -= ISO_BLOCKSIZE;
+						if (nb_blocks++ % PROGRESS_THRESHOLD == 0)
+							UpdateProgress(OP_DOS, 100.0f*nb_blocks/total_blocks);
 					}
-					buf_size = (DWORD)MIN(i_file_length, ISO_BLOCKSIZE);
-					ISO_BLOCKING(r = WriteFileWithRetry(file_handle, buf, buf_size, &wr_size, WRITE_RETRIES));
-					if (!r) {
-						uprintf("  Error writing file: %s", WindowsErrorString());
-						goto out;
-					}
-					i_file_length -= ISO_BLOCKSIZE;
-					if (nb_blocks++ % PROGRESS_THRESHOLD == 0)
-						UpdateProgress(OP_DOS, 100.0f*nb_blocks/total_blocks);
 				}
 			}
 			if (preserve_timestamps) {
@@ -622,7 +651,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 
 out:
 	ISO_BLOCKING(safe_closehandle(file_handle));
-	_cdio_list_free(p_entlist, true);
+	iso9660_filelist_free(p_entlist);
 	return r;
 }
 
@@ -663,7 +692,7 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 	udf_dirent_t* p_udf_root;
 	char *tmp, *buf, *ext;
 	char path[MAX_PATH], path2[16];
-	const char* basedir[] = { "i386", "minint" };
+	const char* basedir[] = { "i386", "amd64", "minint" };
 	const char* tmp_sif = ".\\txtsetup.sif~";
 	iso_extension_mask_t iso_extension_mask = ISO_EXTENSION_ALL;
 	char* spacing = "  ";
@@ -737,7 +766,7 @@ try_iso:
 		goto out;
 	}
 	uprintf("%sImage is an ISO9660 image", spacing);
-	i_joliet_level = iso9660_ifs_get_joliet_level(p_iso);
+	joliet_level = iso9660_ifs_get_joliet_level(p_iso);
 	if (scan_only) {
 		if (iso9660_ifs_get_volume_id(p_iso, &tmp)) {
 			static_strcpy(img_report.label, tmp);
@@ -849,16 +878,16 @@ out:
 				uprintf("  Warning: Could not detect Isolinux version - Forcing to %s (embedded)",
 					img_report.sl_version_str);
 			}
-			if (!IS_EFI_BOOTABLE(img_report) && HAS_EFI_IMG(img_report) && ExtractEfiImgFiles(NULL)) {
-				img_report.has_efi = 0x80;
-			}
+		}
+		if (!IS_EFI_BOOTABLE(img_report) && HAS_EFI_IMG(img_report) && ExtractEfiImgFiles(NULL)) {
+			img_report.has_efi = 0x80;
 		}
 		if (HAS_WINPE(img_report)) {
 			// In case we have a WinPE 1.x based iso, we extract and parse txtsetup.sif
 			// during scan, to see if /minint was provided for OsLoadOptions, as it decides
 			// whether we should use 0x80 or 0x81 as the disk ID in the MBR
 			static_sprintf(path, "/%s/txtsetup.sif",
-				basedir[((img_report.winpe&WINPE_I386) == WINPE_I386)?0:1]);
+				basedir[((img_report.winpe&WINPE_I386) == WINPE_I386)?0:((img_report.winpe&WINPE_AMD64) == WINPE_AMD64?1:2)]);
 			ExtractISOFile(src_iso, path, tmp_sif, FILE_ATTRIBUTE_NORMAL);
 			tmp = get_token_data_file("OsLoadOptions", tmp_sif);
 			if (tmp != NULL) {
@@ -870,8 +899,8 @@ out:
 			_unlinkU(tmp_sif);
 			safe_free(tmp);
 		}
-		if (HAS_INSTALL_WIM(img_report)) {
-			img_report.install_wim_version = GetInstallWimVersion(src_iso);
+		if (HAS_WININST(img_report)) {
+			img_report.wininst_version = GetInstallWimVersion(src_iso);
 		}
 		if (img_report.has_grub2) {
 			// In case we have a GRUB2 based iso, we extract boot/grub/i386-pc/normal.mod to parse its version
@@ -948,7 +977,7 @@ int64_t ExtractISOFile(const char* iso, const char* iso_file, const char* dest_f
 {
 	size_t i, j;
 	ssize_t read_size;
-	int64_t file_length, r = 0;
+	int64_t file_length, extent_length, r = 0;
 	char buf[UDF_BLOCKSIZE];
 	DWORD buf_size, wr_size;
 	iso9660_t* p_iso = NULL;
@@ -1012,20 +1041,20 @@ try_iso:
 	}
 
 	for (j = 0; j < p_statbuf->extents; j++) {
-		file_length = p_statbuf->size[j];
-		for (i = 0; file_length > 0; i++) {
+		extent_length = p_statbuf->extsize[j];
+		for (i = 0; extent_length > 0; i++) {
 			memset(buf, 0, ISO_BLOCKSIZE);
 			lsn = p_statbuf->lsn[j] + (lsn_t)i;
 			if (iso9660_iso_seek_read(p_iso, buf, lsn, 1) != ISO_BLOCKSIZE) {
 				uprintf("  Error reading ISO9660 file %s at LSN %lu", iso_file, (long unsigned int)lsn);
 				goto out;
 			}
-			buf_size = (DWORD)MIN(file_length, ISO_BLOCKSIZE);
+			buf_size = (DWORD)MIN(extent_length, ISO_BLOCKSIZE);
 			if (!WriteFileWithRetry(file_handle, buf, buf_size, &wr_size, WRITE_RETRIES)) {
 				uprintf("  Error writing file %s: %s", dest_file, WindowsErrorString());
 				goto out;
 			}
-			file_length -= ISO_BLOCKSIZE;
+			extent_length -= ISO_BLOCKSIZE;
 			r += ISO_BLOCKSIZE;
 		}
 	}
@@ -1055,7 +1084,7 @@ uint32_t GetInstallWimVersion(const char* iso)
 	udf_dirent_t *p_udf_root = NULL, *p_udf_file = NULL;
 	iso9660_stat_t *p_statbuf = NULL;
 
-	wim_path = safe_strdup(&img_report.install_wim_path[2]);
+	wim_path = safe_strdup(&img_report.wininst_path[0][2]);
 	if (wim_path == NULL)
 		goto out;
 	// UDF indiscriminately accepts slash or backslash delimiters,
@@ -1170,7 +1199,7 @@ BOOL ExtractEfiImgFiles(const char* dir)
 	iso9660_readfat_private* p_private = NULL;
 	libfat_sector_t s;
 	int32_t dc, c;
-	struct libfat_filesystem *fs = NULL;
+	struct libfat_filesystem *lf_fs = NULL;
 	struct libfat_direntry direntry;
 	char name[12] = { 0 };
 	char path[64];
@@ -1201,17 +1230,17 @@ BOOL ExtractEfiImgFiles(const char* dir)
 		uprintf("Error reading ISO-9660 file %s at LSN %lu\n", img_report.efi_img_path, (long unsigned int)p_private->lsn);
 		goto out;
 	}
-	fs = libfat_open(iso9660_readfat, (intptr_t)p_private);
-	if (fs == NULL) {
+	lf_fs = libfat_open(iso9660_readfat, (intptr_t)p_private);
+	if (lf_fs == NULL) {
 		uprintf("FAT access error");
 		goto out;
 	}
 
 	// Navigate to /EFI/BOOT
-	if (libfat_searchdir(fs, 0, "EFI        ", &direntry) < 0)
+	if (libfat_searchdir(lf_fs, 0, "EFI        ", &direntry) < 0)
 		goto out;
 	dc = direntry.entry[26] + (direntry.entry[27] << 8);
-	if (libfat_searchdir(fs, dc, "BOOT       ", &direntry) < 0)
+	if (libfat_searchdir(lf_fs, dc, "BOOT       ", &direntry) < 0)
 		goto out;
 	dc = direntry.entry[26] + (direntry.entry[27] << 8);
 
@@ -1228,7 +1257,7 @@ BOOL ExtractEfiImgFiles(const char* dir)
 			} else
 				name[k++] = toupper(efi_bootname[i][j]);
 		}
-		c = libfat_searchdir(fs, dc, name, &direntry);
+		c = libfat_searchdir(lf_fs, dc, name, &direntry);
 		if (c > 0) {
 			if (dir == NULL) {
 				if (!ret)
@@ -1265,9 +1294,9 @@ BOOL ExtractEfiImgFiles(const char* dir)
 				}
 
 				written = 0;
-				s = libfat_clustertosector(fs, c);
+				s = libfat_clustertosector(lf_fs, c);
 				while ((s != 0) && (s < 0xFFFFFFFFULL) && (written < file_size)) {
-					buf = libfat_get_sector(fs, s);
+					buf = libfat_get_sector(lf_fs, s);
 					size = MIN(LIBFAT_SECTOR_SIZE, file_size - written);
 					if (!WriteFileWithRetry(handle, buf, size, &size, WRITE_RETRIES) ||
 						(size != MIN(LIBFAT_SECTOR_SIZE, file_size - written))) {
@@ -1276,7 +1305,7 @@ BOOL ExtractEfiImgFiles(const char* dir)
 						continue;
 					}
 					written += size;
-					s = libfat_nextsector(fs, s);
+					s = libfat_nextsector(lf_fs, s);
 				}
 				CloseHandle(handle);
 				ret = TRUE;
@@ -1285,8 +1314,8 @@ BOOL ExtractEfiImgFiles(const char* dir)
 	}
 
 out:
-	if (fs != NULL)
-		libfat_close(fs);
+	if (lf_fs != NULL)
+		libfat_close(lf_fs);
 	if (p_statbuf != NULL)
 		safe_free(p_statbuf->rr.psz_symlink);
 	safe_free(p_statbuf);

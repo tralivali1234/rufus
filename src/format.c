@@ -2,7 +2,7 @@
  * Rufus: The Reliable USB Formatting Utility
  * Formatting function calls
  * Copyright © 2007-2009 Tom Thornhill/Ridgecrop
- * Copyright © 2011-2017 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2018 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <ctype.h>
 #include <locale.h>
+#include <assert.h>
 
 #include "rufus.h"
 #include "missing.h"
@@ -53,15 +54,15 @@
 /*
  * Globals
  */
-DWORD FormatStatus;
-badblocks_report report;
-static uint64_t LastRefresh;
+DWORD FormatStatus = 0;
+badblocks_report report = { 0 };
+static uint64_t LastRefresh = 0;
 static float format_percent = 0.0f;
 static int task_number = 0;
 extern const int nb_steps[FS_MAX];
 extern uint32_t dur_mins, dur_secs;
-static int fs_index = 0, wintogo_index = -1;
-extern BOOL force_large_fat32, enable_ntfs_compression, lock_drive, zero_drive, disable_file_indexing;
+static int fs_index = 0, wintogo_index = -1, wininst_index = 0;
+extern BOOL force_large_fat32, enable_ntfs_compression, lock_drive, zero_drive, fast_zeroing, enable_file_indexing, write_as_image;
 uint8_t *grub2_buf = NULL;
 long grub2_len;
 static BOOL WritePBR(HANDLE hLogicalDrive);
@@ -72,7 +73,6 @@ static BOOL WritePBR(HANDLE hLogicalDrive);
 static void OutputUTF8Message(const char* src)
 {
 	int len;
-	char *dst = NULL;
 	wchar_t* wdst = NULL;
 
 	if (src == NULL)
@@ -89,13 +89,9 @@ static void OutputUTF8Message(const char* src)
 	wdst = (wchar_t*)calloc(len+1, sizeof(wchar_t));
 	if ((wdst == NULL) || (MultiByteToWideChar(CP_OEMCP, 0, src, len, wdst, len+1) == 0))
 		goto out;
-	dst = wchar_to_utf8(wdst);
-	if (dst == NULL)
-		goto out;
-	uprintf("%s", dst);
+	uprintf("%S", wdst);
 
 out:
-	safe_free(dst);
 	safe_free(wdst);
 }
 
@@ -477,7 +473,7 @@ static BOOL FormatFAT32(DWORD DriveIndex)
 	pFAT32BootSect->sJmpBoot[0]=0xEB;
 	pFAT32BootSect->sJmpBoot[1]=0x58; // jmp.s $+0x5a is 0xeb 0x58, not 0xeb 0x5a. Thanks Marco!
 	pFAT32BootSect->sJmpBoot[2]=0x90;
-	strncpy((char*)pFAT32BootSect->sOEMName, "MSWIN4.1", 8);
+	memcpy(pFAT32BootSect->sOEMName, "MSWIN4.1", 8);
 	pFAT32BootSect->wBytsPerSec = (WORD) BytesPerSect;
 
 	ClusterSize = (DWORD)ComboBox_GetItemData(hClusterSize, ComboBox_GetCurSel(hClusterSize));
@@ -676,16 +672,17 @@ static BOOL FormatDrive(DWORD DriveIndex)
 	BOOL r = FALSE;
 	PF_DECL(FormatEx);
 	PF_DECL(EnableVolumeCompression);
-	char FSType[32], path[MAX_PATH];
+	char FSType[64], path[MAX_PATH];
 	char *locale, *VolumeName = NULL;
 	WCHAR* wVolumeName = NULL;
 	WCHAR wFSType[64];
 	WCHAR wLabel[64];
 	ULONG ulClusterSize;
-	size_t i;
-	int fs;
+	size_t i, index;
 
 	GetWindowTextU(hFileSystem, FSType, ARRAYSIZE(FSType));
+	// Skip the RIGHT_TO_LEFT_EMBEDDING mark from LTR languages
+	index = (strncmp(FSType, RIGHT_TO_LEFT_EMBEDDING, sizeof(RIGHT_TO_LEFT_EMBEDDING) - 1) == 0) ? (sizeof(RIGHT_TO_LEFT_EMBEDDING) - 1) : 0;
 	// Might have a (Default) suffix => remove it
 	for (i=strlen(FSType); i>2; i--) {
 		if (FSType[i] == '(') {
@@ -693,11 +690,10 @@ static BOOL FormatDrive(DWORD DriveIndex)
 			break;
 		}
 	}
-	fs = (int)ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem));
 	if ((fs == FS_UDF) && !((dur_mins == 0) && (dur_secs == 0))) {
-		PrintInfoDebug(0, MSG_220, FSType, dur_mins, dur_secs);
+		PrintInfoDebug(0, MSG_220, &FSType[index], dur_mins, dur_secs);
 	} else {
-		PrintInfoDebug(0, MSG_222, FSType);
+		PrintInfoDebug(0, MSG_222, &FSType[index]);
 	}
 	VolumeName = GetLogicalName(DriveIndex, TRUE, TRUE);
 	wVolumeName = utf8_to_wchar(VolumeName);
@@ -729,6 +725,8 @@ static BOOL FormatDrive(DWORD DriveIndex)
 	setlocale(LC_ALL, locale);
 
 	GetWindowTextW(hFileSystem, wFSType, ARRAYSIZE(wFSType));
+	// Again, skip the RIGHT_TO_LEFT_EMBEDDING mark if present
+	index = (wFSType[0] == 0x202b) ? 1 : 0;
 	// We may have a " (Default)" trail
 	for (i=0; i<wcslen(wFSType); i++) {
 		if (wFSType[i] == ' ') {
@@ -751,9 +749,9 @@ static BOOL FormatDrive(DWORD DriveIndex)
 	task_number = 0;
 	fs_index = (int)ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem));
 
-	uprintf("%s format was selected\n", IsChecked(IDC_QUICKFORMAT)?"Quick":"Slow");
-	pfFormatEx(wVolumeName, SelectedDrive.MediaType, wFSType, wLabel,
-		IsChecked(IDC_QUICKFORMAT), ulClusterSize, FormatExCallback);
+	uprintf("%s format was selected\n", IsChecked(IDC_QUICK_FORMAT)?"Quick":"Slow");
+	pfFormatEx(wVolumeName, SelectedDrive.MediaType, &wFSType[index], wLabel,
+		IsChecked(IDC_QUICK_FORMAT), ulClusterSize, FormatExCallback);
 
 	if ((fs == FS_NTFS) && (enable_ntfs_compression) && (pfEnableVolumeCompression != NULL)) {
 		wVolumeName[wcslen(wVolumeName)] = '\\';	// Add trailing backslash back again
@@ -813,7 +811,7 @@ out:
 static BOOL ClearMBRGPT(HANDLE hPhysicalDrive, LONGLONG DiskSize, DWORD SectorSize, BOOL add1MB)
 {
 	BOOL r = FALSE;
-	uint64_t i, last_sector = DiskSize/SectorSize, num_sectors_to_clear;
+	uint64_t i, j, last_sector = DiskSize/SectorSize, num_sectors_to_clear;
 	unsigned char* pBuf = (unsigned char*) calloc(SectorSize, 1);
 
 	PrintInfoDebug(0, MSG_224);
@@ -837,13 +835,34 @@ static BOOL ClearMBRGPT(HANDLE hPhysicalDrive, LONGLONG DiskSize, DWORD SectorSi
 
 	uprintf("Erasing %d sectors", num_sectors_to_clear);
 	for (i=0; i<num_sectors_to_clear; i++) {
-		if ((IS_ERROR(FormatStatus)) || (write_sectors(hPhysicalDrive, SectorSize, i, 1, pBuf) != SectorSize)) {
-			goto out;
+		for (j = 1; j <= WRITE_RETRIES; j++) {
+			if (IS_ERROR(FormatStatus))
+				goto out;
+			if (write_sectors(hPhysicalDrive, SectorSize, i, 1, pBuf) != SectorSize) {
+				if (j < WRITE_RETRIES) {
+					uprintf("Retrying in %d seconds...", WRITE_TIMEOUT / 1000);
+					Sleep(WRITE_TIMEOUT);
+				} else
+					goto out;
+			}
 		}
 	}
-	for (i=last_sector-MAX_SECTORS_TO_CLEAR; i<last_sector; i++) {
-		if ((IS_ERROR(FormatStatus)) || (write_sectors(hPhysicalDrive, SectorSize, i, 1, pBuf) != SectorSize)) {
-			goto out;
+	for (i = last_sector - MAX_SECTORS_TO_CLEAR; i < last_sector; i++) {
+		for (j = 1; j <= WRITE_RETRIES; j++) {
+			if (IS_ERROR(FormatStatus))
+				goto out;
+			if (write_sectors(hPhysicalDrive, SectorSize, i, 1, pBuf) != SectorSize) {
+				if (j < WRITE_RETRIES) {
+					uprintf("Retrying in %d seconds...", WRITE_TIMEOUT / 1000);
+					Sleep(WRITE_TIMEOUT);
+				} else {
+					// Windows seems to be an ass about keeping a lock on a backup GPT,
+					// so we try to be lenient about not being able to clear it.
+					uprintf("Warning: Failed to clear backup GPT...");
+					r = TRUE;
+					goto out;
+				}
+			}
 		}
 	}
 	r = TRUE;
@@ -864,11 +883,8 @@ static BOOL WriteMBR(HANDLE hPhysicalDrive)
 	FAKE_FD fake_fd = { 0 };
 	FILE* fp = (FILE*)&fake_fd;
 	const char* using_msg = "Using %s MBR\n";
-	int fs = (int)ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem));
-	int bt = (int)ComboBox_GetItemData(hBootType, ComboBox_GetCurSel(hBootType));
-	int tt = GETTARGETTYPE((int)ComboBox_GetItemData(hPartitionScheme, ComboBox_GetCurSel(hPartitionScheme)));
 
-	AnalyzeMBR(hPhysicalDrive, "Drive");
+	AnalyzeMBR(hPhysicalDrive, "Drive", FALSE);
 
 	if (SelectedDrive.SectorSize < 512)
 		goto out;
@@ -906,7 +922,7 @@ static BOOL WriteMBR(HANDLE hPhysicalDrive)
 		buffer[0x1c2] = 0x0c;
 		break;
 	}
-	if ((IsChecked(IDC_BOOT)) && (tt == TT_BIOS)) {
+	if ((bt != BT_NON_BOOTABLE) && (tt == TT_BIOS)) {
 		// Set first partition bootable - masquerade as per the DiskID selected
 		buffer[0x1be] = IsChecked(IDC_RUFUS_MBR) ?
 			(BYTE)ComboBox_GetItemData(hDiskID, ComboBox_GetCurSel(hDiskID)):0x80;
@@ -936,21 +952,21 @@ static BOOL WriteMBR(HANDLE hPhysicalDrive)
 
 	// Syslinux
 	if ( (bt == BT_SYSLINUX_V4) || (bt == BT_SYSLINUX_V6) ||
-		 ((bt == BT_ISO) && HAS_SYSLINUX(img_report)) ) {
+		 ((bt == BT_IMAGE) && HAS_SYSLINUX(img_report)) ) {
 		uprintf(using_msg, "Syslinux");
 		r = write_syslinux_mbr(fp);
 		goto notify;
 	}
 
 	// Grub 2.0
-	if ( ((bt == BT_ISO) && (img_report.has_grub2)) || (bt == BT_GRUB2) ) {
+	if ( ((bt == BT_IMAGE) && (img_report.has_grub2)) || (bt == BT_GRUB2) ) {
 		uprintf(using_msg, "Grub 2.0");
 		r = write_grub2_mbr(fp);
 		goto notify;
 	}
 
 	// Grub4DOS
-	if ( ((bt == BT_ISO) && (img_report.has_grub4dos)) || (bt == BT_GRUB4DOS) ) {
+	if ( ((bt == BT_IMAGE) && (img_report.has_grub4dos)) || (bt == BT_GRUB4DOS) ) {
 		uprintf(using_msg, "Grub4DOS");
 		r = write_grub4dos_mbr(fp);
 		goto notify;
@@ -964,7 +980,7 @@ static BOOL WriteMBR(HANDLE hPhysicalDrive)
 	}
 
 	// KolibriOS
-	if ( (bt == BT_ISO) && HAS_KOLIBRIOS(img_report) && (IS_FAT(fs))) {
+	if ( (bt == BT_IMAGE) && HAS_KOLIBRIOS(img_report) && (IS_FAT(fs))) {
 		uprintf(using_msg, "KolibriOS");
 		r = write_kolibrios_mbr(fp);
 		goto notify;
@@ -997,7 +1013,7 @@ static BOOL WriteSBR(HANDLE hPhysicalDrive)
 {
 	// TODO: Do we need anything special for 4K sectors?
 	DWORD size, max_size, mbr_size = 0x200;
-	int r, bt = (int)ComboBox_GetItemData(hBootType, ComboBox_GetCurSel(hBootType));
+	int r, sub_type = bt;
 	unsigned char* buf = NULL;
 	FAKE_FD fake_fd = { 0 };
 	FILE* fp = (FILE*)&fake_fd;
@@ -1005,18 +1021,18 @@ static BOOL WriteSBR(HANDLE hPhysicalDrive)
 	fake_fd._handle = (char*)hPhysicalDrive;
 	set_bytes_per_sector(SelectedDrive.SectorSize);
 	// Ensure that we have sufficient space for the SBR
-	max_size = IsChecked(IDC_EXTRA_PARTITION) ?
+	max_size = IsChecked(IDC_OLD_BIOS_FIXES) ?
 		(DWORD)(SelectedDrive.SectorsPerTrack * SelectedDrive.SectorSize) : 1*MB;
 	max_size -= mbr_size;
 	// Syslinux has precedence over Grub
-	if ((bt == BT_ISO) && (!HAS_SYSLINUX(img_report))) {
+	if ((bt == BT_IMAGE) && (!HAS_SYSLINUX(img_report))) {
 		if (img_report.has_grub4dos)
-			bt = BT_GRUB4DOS;
+			sub_type = BT_GRUB4DOS;
 		if (img_report.has_grub2)
-			bt = BT_GRUB2;
+			sub_type = BT_GRUB2;
 	}
 
-	switch (bt) {
+	switch (sub_type) {
 	case BT_GRUB4DOS:
 		uprintf("Writing Grub4Dos SBR");
 		buf = GetResource(hMainInstance, MAKEINTRESOURCEA(IDR_GR_GRUB_GRLDR_MBR), _RT_RCDATA, "grldr.mbr", &size, FALSE);
@@ -1059,12 +1075,12 @@ static BOOL WriteSBR(HANDLE hPhysicalDrive)
 /*
  * Process the Partition Boot Record
  */
-static __inline const char* bt_to_name(int bt) {
+static __inline const char* bt_to_name(void) {
 	switch (bt) {
 	case BT_FREEDOS: return "FreeDOS";
 	case BT_REACTOS: return "ReactOS";
 	default:
-		return ((bt==BT_ISO) && HAS_KOLIBRIOS(img_report)) ? "KolibriOS" : "Standard";
+		return ((bt==BT_IMAGE) && HAS_KOLIBRIOS(img_report)) ? "KolibriOS" : "Standard";
 	}
 }
 static BOOL WritePBR(HANDLE hLogicalVolume)
@@ -1072,7 +1088,6 @@ static BOOL WritePBR(HANDLE hLogicalVolume)
 	int i;
 	FAKE_FD fake_fd = { 0 };
 	FILE* fp = (FILE*)&fake_fd;
-	int bt = (int)ComboBox_GetItemData(hBootType, ComboBox_GetCurSel(hBootType));
 	const char* using_msg = "Using %s %s partition boot record\n";
 
 	fake_fd._handle = (char*)hLogicalVolume;
@@ -1080,7 +1095,7 @@ static BOOL WritePBR(HANDLE hLogicalVolume)
 
 	switch (ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem))) {
 	case FS_FAT16:
-		uprintf(using_msg, bt_to_name(bt), "FAT16");
+		uprintf(using_msg, bt_to_name(), "FAT16");
 		if (!is_fat_16_fs(fp)) {
 			uprintf("New volume does not have a FAT16 boot sector - aborting\n");
 			break;
@@ -1090,7 +1105,7 @@ static BOOL WritePBR(HANDLE hLogicalVolume)
 			if (!write_fat_16_fd_br(fp, 0)) break;
 		} else if (bt == BT_REACTOS) {
 			if (!write_fat_16_ros_br(fp, 0)) break;
-		} else if ((bt == BT_ISO) && HAS_KOLIBRIOS(img_report)) {
+		} else if ((bt == BT_IMAGE) && HAS_KOLIBRIOS(img_report)) {
 			uprintf("FAT16 is not supported for KolibriOS\n"); break;
 		} else {
 			if (!write_fat_16_br(fp, 0)) break;
@@ -1100,7 +1115,7 @@ static BOOL WritePBR(HANDLE hLogicalVolume)
 			break;
 		return TRUE;
 	case FS_FAT32:
-		uprintf(using_msg, bt_to_name(bt), "FAT32");
+		uprintf(using_msg, bt_to_name(), "FAT32");
 		for (i=0; i<2; i++) {
 			if (!is_fat_32_fs(fp)) {
 				uprintf("New volume does not have a %s FAT32 boot sector - aborting\n", i?"secondary":"primary");
@@ -1112,11 +1127,11 @@ static BOOL WritePBR(HANDLE hLogicalVolume)
 				if (!write_fat_32_fd_br(fp, 0)) break;
 			} else if (bt == BT_REACTOS) {
 				if (!write_fat_32_ros_br(fp, 0)) break;
-			} else if ((bt == BT_ISO) && HAS_KOLIBRIOS(img_report)) {
+			} else if ((bt == BT_IMAGE) && HAS_KOLIBRIOS(img_report)) {
 				if (!write_fat_32_kos_br(fp, 0)) break;
-			} else if ((bt == BT_ISO) && HAS_BOOTMGR(img_report)) {
+			} else if ((bt == BT_IMAGE) && HAS_BOOTMGR(img_report)) {
 				if (!write_fat_32_pe_br(fp, 0)) break;
-			} else if ((bt == BT_ISO) && HAS_WINPE(img_report)) {
+			} else if ((bt == BT_IMAGE) && HAS_WINPE(img_report)) {
 				if (!write_fat_32_nt_br(fp, 0)) break;
 			} else {
 				if (!write_fat_32_br(fp, 0)) break;
@@ -1128,7 +1143,7 @@ static BOOL WritePBR(HANDLE hLogicalVolume)
 		}
 		return TRUE;
 	case FS_NTFS:
-		uprintf(using_msg, bt_to_name(bt), "NTFS");
+		uprintf(using_msg, bt_to_name(), "NTFS");
 		if (!is_ntfs_fs(fp)) {
 			uprintf("New volume does not have an NTFS boot sector - aborting\n");
 			break;
@@ -1153,10 +1168,11 @@ static BOOL WritePBR(HANDLE hLogicalVolume)
 static BOOL SetupWinPE(char drive_letter)
 {
 	char src[64], dst[32];
-	const char* basedir[] = { "i386", "minint" };
-	const char* patch_str_org[] = { "\\minint\\txtsetup.sif", "\\minint\\system32\\" };
-	const char* patch_str_rep[] = { "\\i386\\txtsetup.sif", "\\i386\\system32\\" };
-	const char *win_nt_bt_org = "$win_nt$.~bt", *win_nt_bt_rep = "i386";
+	const char* basedir[3] = { "i386", "amd64", "minint" };
+	const char* patch_str_org[2] = { "\\minint\\txtsetup.sif", "\\minint\\system32\\" };
+	const char* patch_str_rep[2][2] = { { "\\i386\\txtsetup.sif", "\\i386\\system32\\" } ,
+										{ "\\amd64\\txtsetup.sif", "\\amd64\\system32\\" } };
+	const char *win_nt_bt_org = "$win_nt$.~bt";
 	const char *rdisk_zero = "rdisk(0)";
 	const LARGE_INTEGER liZero = { {0, 0} };
 	char setupsrcdev[64];
@@ -1165,16 +1181,19 @@ static BOOL SetupWinPE(char drive_letter)
 	BOOL r = FALSE;
 	char* buffer = NULL;
 
-	index = ((img_report.winpe&WINPE_I386) == WINPE_I386)?0:1;
+	if ((img_report.winpe & WINPE_AMD64) == WINPE_AMD64)
+		index = 1;
+	else if ((img_report.winpe & WINPE_MININT) == WINPE_MININT)
+		index = 2;
 	// Allow other values than harddisk 1, as per user choice for disk ID
 	static_sprintf(setupsrcdev, "SetupSourceDevice = \"\\device\\harddisk%d\\partition1\"",
 		ComboBox_GetCurSel(hDiskID));
 	// Copy of ntdetect.com in root
-	static_sprintf(src, "%c:\\%s\\ntdetect.com", drive_letter, basedir[index]);
+	static_sprintf(src, "%c:\\%s\\ntdetect.com", drive_letter, basedir[2*(index/2)]);
 	static_sprintf(dst, "%c:\\ntdetect.com", drive_letter);
 	CopyFileA(src, dst, TRUE);
 	if (!img_report.uses_minint) {
-		// Create a copy of txtsetup.sif, as we want to keep the i386 files unmodified
+		// Create a copy of txtsetup.sif, as we want to keep the i386/amd64 files unmodified
 		static_sprintf(src, "%c:\\%s\\txtsetup.sif", drive_letter, basedir[index]);
 		static_sprintf(dst, "%c:\\txtsetup.sif", drive_letter);
 		if (!CopyFileA(src, dst, TRUE)) {
@@ -1187,7 +1206,7 @@ static BOOL SetupWinPE(char drive_letter)
 		uprintf("Successfully added '%s' to %s\n", setupsrcdev, dst);
 	}
 
-	static_sprintf(src, "%c:\\%s\\setupldr.bin", drive_letter,  basedir[index]);
+	static_sprintf(src, "%c:\\%s\\setupldr.bin", drive_letter,  basedir[2*(index/2)]);
 	static_sprintf(dst, "%c:\\BOOTMGR", drive_letter);
 	if (!CopyFileA(src, dst, TRUE)) {
 		uprintf("Did not copy %s as %s: %s\n", src, dst, WindowsErrorString());
@@ -1199,7 +1218,7 @@ static BOOL SetupWinPE(char drive_letter)
 		if (img_report.uses_minint) {
 			uprintf("Detected \\minint directory with /minint option: nothing to patch\n");
 			r = TRUE;
-		} else if (!(img_report.winpe&WINPE_I386)) {
+		} else if (!(img_report.winpe&(WINPE_I386|WINPE_AMD64))) {
 			uprintf("Detected \\minint directory only but no /minint option: not sure what to do\n");
 		}
 		goto out;
@@ -1240,9 +1259,9 @@ static BOOL SetupWinPE(char drive_letter)
 	for (i=1; i<size-32; i++) {
 		for (j=0; j<ARRAYSIZE(patch_str_org); j++) {
 			if (safe_strnicmp(&buffer[i], patch_str_org[j], strlen(patch_str_org[j])-1) == 0) {
-				uprintf("  0x%08X: '%s' -> '%s'\n", i, &buffer[i], patch_str_rep[j]);
-				strcpy(&buffer[i], patch_str_rep[j]);
-				i += (DWORD)max(strlen(patch_str_org[j]), strlen(patch_str_rep[j]));	// in case org is a substring of rep
+				uprintf("  0x%08X: '%s' -> '%s'\n", i, &buffer[i], patch_str_rep[index][j]);
+				strcpy(&buffer[i], patch_str_rep[index][j]);
+				i += (DWORD)max(strlen(patch_str_org[j]), strlen(patch_str_rep[index][j]));	// in case org is a substring of rep
 			}
 		}
 	}
@@ -1256,13 +1275,13 @@ static BOOL SetupWinPE(char drive_letter)
 				buffer[i+6] = 0x30 + ComboBox_GetCurSel(hDiskID);
 				uprintf("  0x%08X: '%s' -> 'rdisk(%c)'\n", i, rdisk_zero, buffer[i+6]);
 			}
-			// $WIN_NT$_~BT -> i386
+			// $WIN_NT$_~BT -> i386/amd64
 			if (safe_strnicmp(&buffer[i], win_nt_bt_org, strlen(win_nt_bt_org)-1) == 0) {
-				uprintf("  0x%08X: '%s' -> '%s%s'\n", i, &buffer[i], win_nt_bt_rep, &buffer[i+strlen(win_nt_bt_org)]);
-				strcpy(&buffer[i], win_nt_bt_rep);
+				uprintf("  0x%08X: '%s' -> '%s%s'\n", i, &buffer[i], basedir[index], &buffer[i+strlen(win_nt_bt_org)]);
+				strcpy(&buffer[i], basedir[index]);
 				// This ensures that we keep the terminator backslash
-				buffer[i+strlen(win_nt_bt_rep)] = buffer[i+strlen(win_nt_bt_org)];
-				buffer[i+strlen(win_nt_bt_rep)+1] = 0;
+				buffer[i+strlen(basedir[index])] = buffer[i+strlen(win_nt_bt_org)];
+				buffer[i+strlen(basedir[index])+1] = 0;
 			}
 		}
 	}
@@ -1279,30 +1298,45 @@ out:
 	return r;
 }
 
-// Checks which versions of Windows are available in an install.wim image
+// Checks which versions of Windows are available in an install image
 // to set our extraction index. Asks the user to select one if needed.
 // Returns -2 on user cancel, -1 on other error, >=0 on success.
 int SetWinToGoIndex(void)
 {
 	char *mounted_iso, *build, image[128];
 	char tmp_path[MAX_PATH] = "", xml_file[MAX_PATH] = "";
+	char *install_names[MAX_WININST];
 	StrArray version_name, version_index;
 	int i, build_nr = 0;
 	BOOL bNonStandard = FALSE;
 
 	// Sanity checks
 	wintogo_index = -1;
+	wininst_index = 0;
 	if ((nWindowsVersion < WINDOWS_8) || ((WimExtractCheck() & 4) == 0) ||
 		(ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem)) != FS_NTFS)) {
-		return FALSE;
+		return -1;
 	}
+
+	// If we have multiple windows install images, ask the user the one to use
+	if (img_report.wininst_index > 1) {
+		for (i = 0; i < img_report.wininst_index; i++)
+			install_names[i] = &img_report.wininst_path[i][2];
+		wininst_index = SelectionDialog(lmprintf(MSG_130), lmprintf(MSG_131), install_names, img_report.wininst_index);
+		if (wininst_index < 0)
+			return -2;
+		wininst_index--;
+		if ((wininst_index < 0) || (wininst_index >= MAX_WININST))
+			wininst_index = 0;
+	}
+
 	// Mount the install.wim image, that resides on the ISO
 	mounted_iso = MountISO(image_path);
 	if (mounted_iso == NULL) {
 		uprintf("Could not mount ISO for Windows To Go selection");
 		return FALSE;
 	}
-	static_sprintf(image, "%s%s", mounted_iso, &img_report.install_wim_path[2]);
+	static_sprintf(image, "%s%s", mounted_iso, &img_report.wininst_path[wininst_index][2]);
 
 	// Now take a look at the XML file in install.wim to list our versions
 	if ((GetTempPathU(sizeof(tmp_path), tmp_path) == 0)
@@ -1316,7 +1350,7 @@ int SetWinToGoIndex(void)
 
 	// Must use the Windows WIM API as 7z messes up the XML
 	if (!WimExtractFile_API(image, 0, "[1].xml", xml_file)) {
-		uprintf("Failed to acquire WIM index");
+		uprintf("Could not acquire WIM index");
 		goto out;
 	}
 
@@ -1409,7 +1443,7 @@ static BOOL SetupWinToGo(const char* drive_name, BOOL use_ms_efi)
 		FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_ISO_EXTRACT);
 		return FALSE;
 	}
-	static_sprintf(image, "%s%s", mounted_iso, &img_report.install_wim_path[2]);
+	static_sprintf(image, "%s%s", mounted_iso, &img_report.wininst_path[wininst_index][2]);
 	uprintf("Mounted ISO as '%s'", mounted_iso);
 
 	// Now we use the WIM API to apply that image
@@ -1458,9 +1492,10 @@ static BOOL SetupWinToGo(const char* drive_name, BOOL use_ms_efi)
 	// We invoke the 'bcdboot' command from the host, as the one from the drive produces problems (#558)
 	// Also, since Rufus should (usually) be running as a 32 bit app, on 64 bit systems, we need to use
 	// 'C:\Windows\Sysnative' and not 'C:\Windows\System32' to invoke bcdboot, as 'C:\Windows\System32'
-	// will get converted to 'C:\Windows\SysWOW64' behind the scenes, and ther is no bcdboot.exe there.
-	static_sprintf(cmd, "%s\\bcdboot.exe %s\\Windows /v /f ALL /s %s", sysnative_dir,
-		drive_name, (use_ms_efi)?ms_efi:drive_name);
+	// will get converted to 'C:\Windows\SysWOW64' behind the scenes, and there is no bcdboot.exe there.
+	static_sprintf(cmd, "%s\\bcdboot.exe %s\\Windows /v /f %s /s %s", sysnative_dir, drive_name,
+		HAS_BOOTMGR_BIOS(img_report) ? (HAS_BOOTMGR_EFI(img_report) ? "ALL" : "BIOS") : "UEFI",
+		(use_ms_efi)?ms_efi:drive_name);
 	uprintf("Enabling boot using command '%s'", cmd);
 	if (RunCommand(cmd, sysnative_dir, usb_debug) != 0) {
 		// Try to continue... but report a failure
@@ -1529,11 +1564,12 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, HANDLE hSourceImage)
 {
 	BOOL s, ret = FALSE;
 	LARGE_INTEGER li;
-	DWORD rSize, wSize, BufSize;
+	DWORD rSize, wSize, xSize, BufSize;
 	uint64_t wb, target_size = hSourceImage?img_report.image_size:SelectedDrive.DiskSize;
 	int64_t bled_ret;
 	uint8_t *buffer = NULL;
-	int i;
+	uint8_t *cmp_buffer = NULL;
+	int i, *ptr, zero_data, throttle_fast_zeroing = 0;
 
 	// We poked the MBR and other stuff, so we need to rewind
 	li.QuadPart = 0;
@@ -1553,7 +1589,7 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, HANDLE hSourceImage)
 			goto out;
 		}
 	} else {
-		uprintf(hSourceImage?"Writing Image...":"Zeroing drive...");
+		uprintf(hSourceImage?"Writing Image...":fast_zeroing?"Fast-zeroing drive...":"Zeroing drive...");
 		// Our buffer size must be a multiple of the sector size and *ALIGNED* to the sector size
 		BufSize = ((DD_BUFFER_SIZE + SelectedDrive.SectorSize - 1) / SelectedDrive.SectorSize) * SelectedDrive.SectorSize;
 		buffer = (uint8_t*)_mm_malloc(BufSize, SelectedDrive.SectorSize);
@@ -1562,12 +1598,18 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, HANDLE hSourceImage)
 			uprintf("Could not allocate disk write buffer");
 			goto out;
 		}
-		// Sanity check
-		if ((uintptr_t)buffer % SelectedDrive.SectorSize != 0) {
-			FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_READ_FAULT;
-			uprintf("Write buffer is not aligned");
+		assert((uintptr_t)buffer % SelectedDrive.SectorSize == 0);
+
+		// Clear buffer
+		memset(buffer, fast_zeroing ? 0xff : 0x00, BufSize);
+
+		cmp_buffer = (uint8_t*)_mm_malloc(BufSize, SelectedDrive.SectorSize);
+		if (cmp_buffer == NULL) {
+			FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_NOT_ENOUGH_MEMORY;
+			uprintf("Could not allocate disk comparison buffer");
 			goto out;
 		}
+		assert((uintptr_t)cmp_buffer % SelectedDrive.SectorSize == 0);
 
 		// Don't bother trying for something clever, using double buffering overlapped and whatnot:
 		// With Windows' default optimizations, sync read + sync write for sequential operations
@@ -1577,7 +1619,7 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, HANDLE hSourceImage)
 			if (GetTickCount64() > LastRefresh + MAX_REFRESH) {
 				LastRefresh = GetTickCount64();
 				format_percent = (100.0f*wb) / (1.0f*target_size);
-				PrintInfo(0, hSourceImage?MSG_261:MSG_286, format_percent);
+				PrintInfo(0, hSourceImage?MSG_261:fast_zeroing?MSG_306:MSG_286, format_percent);
 				UpdateProgress(OP_FORMAT, format_percent);
 			}
 
@@ -1585,7 +1627,7 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, HANDLE hSourceImage)
 				s = ReadFile(hSourceImage, buffer, BufSize, &rSize, NULL);
 				if (!s) {
 					FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_READ_FAULT;
-					uprintf("read error: %s", WindowsErrorString());
+					uprintf("Read error: %s", WindowsErrorString());
 					goto out;
 				}
 				if (rSize == 0)
@@ -1599,20 +1641,67 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, HANDLE hSourceImage)
 			// WriteFile fails unless the size is a multiple of sector size
 			if (rSize % SelectedDrive.SectorSize != 0)
 				rSize = ((rSize + SelectedDrive.SectorSize - 1) / SelectedDrive.SectorSize) * SelectedDrive.SectorSize;
-			for (i = 0; i < WRITE_RETRIES; i++) {
+
+			// Fast-zeroing: Depending on your hardware, reading from flash may be much faster than writing, so
+			// we might speed things up by skipping empty blocks, or skipping the write if the data is the same.
+			// Notes: A block is declared empty when all bits are either 0 (zeros) or 1 (flash block erased).
+			// Also, a back-off strategy is used to limit reading.
+			if (throttle_fast_zeroing) {
+				throttle_fast_zeroing--;
+			} else if (fast_zeroing) {
+				assert(hSourceImage == NULL);	// Only enabled for zeroing
+				CHECK_FOR_USER_CANCEL;
+
+				// Read block and compare against the block that needs to be written
+				s = ReadFile(hPhysicalDrive, cmp_buffer, rSize, &xSize, NULL);
+				if ((!s) || (xSize != rSize) ) {
+					uprintf("Read error: Could not read data for comparison - %s", WindowsErrorString());
+					goto out;
+				}
+
+				// Check for an empty block
+				ptr = (int*)(cmp_buffer);
+				// Get first element
+				zero_data = ptr[0];
+				// Check all bits are the same
+				if ((zero_data == 0) || (zero_data == -1)) {
+					// Compare the rest of the block against the first element
+					for (i = 1; i < (int)(rSize / sizeof(int)); i++) {
+						if (ptr[i] != zero_data)
+							break;
+					}
+					if (i >= (int)(rSize / sizeof(int))) {
+						// Block is empty, skip write
+						wSize = rSize;
+						continue;
+					}
+				}
+
+				// Move the file pointer position back for writing
+				li.QuadPart = wb;
+				if (!SetFilePointerEx(hPhysicalDrive, li, NULL, FILE_BEGIN)) {
+					uprintf("Error: Could not reset position - %s", WindowsErrorString());
+					goto out;
+				}
+				// Throttle read operations
+				throttle_fast_zeroing = 15;
+			}
+
+			for (i = 1; i <= WRITE_RETRIES; i++) {
 				CHECK_FOR_USER_CANCEL;
 				s = WriteFile(hPhysicalDrive, buffer, rSize, &wSize, NULL);
 				if ((s) && (wSize == rSize))
 					break;
 				if (s)
-					uprintf("write error: Wrote %d bytes, expected %d bytes", wSize, rSize);
+					uprintf("Write error: Wrote %d bytes, expected %d bytes", wSize, rSize);
 				else
-					uprintf("write error at sector %d: %s", wb / SelectedDrive.SectorSize, WindowsErrorString());
-				if (i < WRITE_RETRIES - 1) {
+					uprintf("Write error at sector %" PRIi64 ": %s", wb / SelectedDrive.SectorSize, WindowsErrorString());
+				if (i < WRITE_RETRIES) {
 					li.QuadPart = wb;
-					uprintf("  RETRYING...\n");
+					uprintf("Retrying in %d seconds...", WRITE_TIMEOUT / 1000);
+					Sleep(WRITE_TIMEOUT);
 					if (!SetFilePointerEx(hPhysicalDrive, li, NULL, FILE_BEGIN)) {
-						uprintf("write error: could not reset position - %s", WindowsErrorString());
+						uprintf("Write error: Could not reset position - %s", WindowsErrorString());
 						goto out;
 					}
 				} else {
@@ -1621,13 +1710,15 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, HANDLE hSourceImage)
 				}
 				Sleep(200);
 			}
-			if (i >= WRITE_RETRIES) goto out;
+			if (i > WRITE_RETRIES)
+				goto out;
 		}
 	}
 	RefreshDriveLayout(hPhysicalDrive);
 	ret = TRUE;
 out:
 	safe_mm_free(buffer);
+	safe_mm_free(cmp_buffer);
 	return ret;
 }
 
@@ -1644,7 +1735,7 @@ out:
  */
 DWORD WINAPI FormatThread(void* param)
 {
-	int i, r, pt, tt, fs, bt;
+	int i, r;
 	BOOL ret, use_large_fat32, windows_to_go;
 	DWORD DriveIndex = (DWORD)(uintptr_t)param;
 	HANDLE hPhysicalDrive = INVALID_HANDLE_VALUE;
@@ -1661,12 +1752,9 @@ DWORD WINAPI FormatThread(void* param)
 	char kolibri_dst[] = "?:\\MTLD_F32";
 	char grub4dos_dst[] = "?:\\grldr";
 
-	fs = (int)ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem));
-	bt = (int)ComboBox_GetItemData(hBootType, ComboBox_GetCurSel(hBootType));
-	pt = GETPARTTYPE((int)ComboBox_GetItemData(hPartitionScheme, ComboBox_GetCurSel(hPartitionScheme)));
-	tt = GETTARGETTYPE((int)ComboBox_GetItemData(hPartitionScheme, ComboBox_GetCurSel(hPartitionScheme)));
 	use_large_fat32 = (fs == FS_FAT32) && ((SelectedDrive.DiskSize > LARGE_FAT32_SIZE) || (force_large_fat32));
-	windows_to_go = (togo_mode) && HAS_WINTOGO(img_report) && (Button_GetCheck(GetDlgItem(hMainDialog, IDC_WINDOWS_TO_GO)) == BST_CHECKED);
+	windows_to_go = (image_options & IMOP_WINTOGO) && (bt == BT_IMAGE) && HAS_WINTOGO(img_report) &&
+		(ComboBox_GetCurSel(GetDlgItem(hMainDialog, IDC_IMAGE_OPTION)) == 1);
 	large_drive = (SelectedDrive.DiskSize > (1*TB));
 	if (large_drive)
 		uprintf("Notice: Large drive detected (may produce short writes)");
@@ -1676,19 +1764,19 @@ DWORD WINAPI FormatThread(void* param)
 		// http://msdn.microsoft.com/en-us/library/windows/hardware/dn640535.aspx#gpt_faq_what_disk_require_msr
 		extra_partitions = XP_MSR | XP_EFI;
 	else if ( (fs == FS_NTFS) && ((bt == BT_UEFI_NTFS) ||
-			  ((bt == BT_ISO) && IS_EFI_BOOTABLE(img_report) && ((tt == TT_UEFI) || (windows_to_go) || (allow_dual_uefi_bios)))) )
+			  ((bt == BT_IMAGE) && IS_EFI_BOOTABLE(img_report) && ((tt == TT_UEFI) || (windows_to_go) || (allow_dual_uefi_bios)))) )
 		extra_partitions = XP_UEFI_NTFS;
-	else if (IsChecked(IDC_EXTRA_PARTITION))
+	else if (IsChecked(IDC_OLD_BIOS_FIXES))
 		extra_partitions = XP_COMPAT;
 
 	PrintInfoDebug(0, MSG_225);
-	hPhysicalDrive = GetPhysicalHandle(DriveIndex, lock_drive, TRUE, !lock_drive);
+	hPhysicalDrive = GetPhysicalHandle(DriveIndex, lock_drive, FALSE, !lock_drive);
 	if (hPhysicalDrive == INVALID_HANDLE_VALUE) {
 		FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_OPEN_FAILED;
 		goto out;
 	}
 
-	// At this stage we should have both a handle and a lock to the physical drive...
+	// At this stage we have both a handle and a lock to the physical drive
 	if (!GetDriveLetters(DriveIndex, drive_letters)) {
 		uprintf("Failed to get a drive letter\n");
 		FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_CANT_ASSIGN_LETTER);
@@ -1705,9 +1793,9 @@ DWORD WINAPI FormatThread(void* param)
 	} else {
 		// Unmount all mounted volumes that belong to this drive
 		// Do it in reverse so that we always end on the first volume letter
-		for (i=(int)safe_strlen(drive_letters); i>0; i--) {
+		for (i = (int)safe_strlen(drive_letters); i > 0; i--) {
 			drive_name[0] = drive_letters[i-1];
-			if (IsChecked(IDC_BOOT) && ((bt == BT_ISO) || (bt == BT_IMG))) {
+			if (bt == BT_IMAGE) {
 				// If we are using an image, check that it isn't located on the drive we are trying to format
 				if ((PathGetDriveNumberU(image_path) + 'A') == drive_letters[i-1]) {
 					uprintf("ABORTED: Cannot use an image that is located on the target drive!\n");
@@ -1723,7 +1811,20 @@ DWORD WINAPI FormatThread(void* param)
 	}
 	uprintf("Will use '%c:' as volume mountpoint\n", drive_name[0]);
 
-	// ...but we need a lock to the logical drive to be able to write anything to it
+	// It kind of blows, but we have to relinquish access to the physical drive
+	// for VDS to be able to delete the partitions that reside on it...
+	safe_unlockclose(hPhysicalDrive);
+	PrintInfoDebug(0, MSG_239);
+	DeletePartitions(DriveIndex);
+
+	// Now get RW access to the physical drive...
+	hPhysicalDrive = GetPhysicalHandle(DriveIndex, lock_drive, TRUE, !lock_drive);
+	if (hPhysicalDrive == INVALID_HANDLE_VALUE) {
+		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_OPEN_FAILED;
+		goto out;
+	}
+
+	// ...and get a lock to the logical drive so that we can actually write something
 	hLogicalVolume = GetLogicalHandle(DriveIndex, TRUE, FALSE, !lock_drive);
 	if (hLogicalVolume == INVALID_HANDLE_VALUE) {
 		uprintf("Could not lock volume\n");
@@ -1737,12 +1838,9 @@ DWORD WINAPI FormatThread(void* param)
 	}
 	CHECK_FOR_USER_CANCEL;
 
-	if (!zero_drive) {
+	if (!zero_drive && !write_as_image) {
 		PrintInfoDebug(0, MSG_226);
-		AnalyzeMBR(hPhysicalDrive, "Drive");
-		if ((hLogicalVolume != NULL) && (hLogicalVolume != INVALID_HANDLE_VALUE)) {
-			AnalyzePBR(hLogicalVolume);
-		}
+		AnalyzeMBR(hPhysicalDrive, "Drive", FALSE);
 		UpdateProgress(OP_ANALYZE_MBR, -1.0f);
 	}
 
@@ -1751,11 +1849,11 @@ DWORD WINAPI FormatThread(void* param)
 		goto out;
 	}
 
-	// Zap any existing partitions. This helps prevent access errors.
+	// Zap partition records. This helps prevent access errors.
 	// Note, Microsoft's way of cleaning partitions (IOCTL_DISK_CREATE_DISK, which is what we apply
 	// in InitializeDisk) is *NOT ENOUGH* to reset a disk and can render it inoperable for partitioning
 	// or formatting under Windows. See https://github.com/pbatard/rufus/issues/759 for details.
-	if ((!IsChecked(IDC_BOOT)) || (bt != BT_IMG))  {
+	if ((bt != BT_IMAGE) || (img_report.is_iso && !write_as_image)) {
 		if ((!ClearMBRGPT(hPhysicalDrive, SelectedDrive.DiskSize, SelectedDrive.SectorSize, use_large_fat32)) ||
 			(!InitializeDisk(hPhysicalDrive))) {
 			uprintf("Could not reset partitions\n");
@@ -1764,8 +1862,9 @@ DWORD WINAPI FormatThread(void* param)
 		}
 	}
 
-	if (IsChecked(IDC_BADBLOCKS)) {
+	if (IsChecked(IDC_BAD_BLOCKS)) {
 		do {
+			int sel = ComboBox_GetCurSel(hNBPasses);
 			// create a log file for bad blocks report. Since %USERPROFILE% may
 			// have localized characters, we use the UTF-8 API.
 			userdir = getenvU("USERPROFILE");
@@ -1784,8 +1883,8 @@ DWORD WINAPI FormatThread(void* param)
 				fflush(log_fd);
 			}
 
-			if (!BadBlocks(hPhysicalDrive, SelectedDrive.DiskSize, SelectedDrive.SectorSize,
-				ComboBox_GetCurSel(hNBPasses)+1, &report, log_fd)) {
+			if (!BadBlocks(hPhysicalDrive, SelectedDrive.DiskSize, (sel >= 2) ? 4 : sel +1,
+				(sel < 2) ? 0 : sel - 2, &report, log_fd)) {
 				uprintf("Bad blocks: Check failed.\n");
 				if (!IS_ERROR(FormatStatus))
 					FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_BADBLOCKS_FAILURE);
@@ -1830,7 +1929,7 @@ DWORD WINAPI FormatThread(void* param)
 	}
 
 	// Write an image file
-	if (IsChecked(IDC_BOOT) && (bt == BT_IMG)) {
+	if ((bt == BT_IMAGE) && write_as_image) {
 		hSourceImage = CreateFileU(image_path, GENERIC_READ, FILE_SHARE_READ, NULL,
 			OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
 		if (hSourceImage == INVALID_HANDLE_VALUE) {
@@ -1920,13 +2019,12 @@ DWORD WINAPI FormatThread(void* param)
 	}
 	CHECK_FOR_USER_CANCEL;
 
-	// Disable file indexing if the option was selected by the user
-	if ((disable_file_indexing) && ((fs == FS_NTFS) || (fs == FS_UDF) || (fs == FS_REFS))) {
-		if (SetFileAttributesA(guid_volume, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED))
-			uprintf("File indexing has been set to: Disabled");
-		else
+	// Disable file indexing, unless it was force-enabled by the user
+	if ((!enable_file_indexing) && ((fs == FS_NTFS) || (fs == FS_UDF) || (fs == FS_REFS))) {
+		uprintf("Disabling file indexing...");
+		if (!SetFileAttributesA(guid_volume, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED))
 			uprintf("Could not disable file indexing: %s", WindowsErrorString());
-	} else
+	}
 
 	// Refresh the drive label - This is needed as Windows may have altered it from
 	// the name we proposed, and we require an exact label, to patch config files.
@@ -1935,18 +2033,18 @@ DWORD WINAPI FormatThread(void* param)
 		uprintf("Warning: Failed to refresh label: %s", WindowsErrorString());
 	}
 
-	if (IsChecked(IDC_BOOT)) {
+	if (bt != BT_NON_BOOTABLE) {
 		if (bt == BT_UEFI_NTFS) {
 			// All good
 		} else if (tt == TT_UEFI) {
 			// For once, no need to do anything - just check our sanity
-			if ( (bt != BT_ISO) || !IS_EFI_BOOTABLE(img_report) || (fs > FS_NTFS) ) {
-				uprintf("Spock gone crazy error in %s:%d", __FILE__, __LINE__);
+			assert((bt == BT_IMAGE) && IS_EFI_BOOTABLE(img_report) && (fs <= FS_NTFS));
+			if ( (bt != BT_IMAGE) || !IS_EFI_BOOTABLE(img_report) || (fs > FS_NTFS) ) {
 				FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_INSTALL_FAILURE;
 				goto out;
 			}
 		} else if ( (bt == BT_SYSLINUX_V4) || (bt == BT_SYSLINUX_V6) ||
-			((bt == BT_ISO) && (HAS_SYSLINUX(img_report) || HAS_REACTOS(img_report)) &&
+			((bt == BT_IMAGE) && (HAS_SYSLINUX(img_report) || HAS_REACTOS(img_report)) &&
 				(!HAS_WINDOWS(img_report) || !allow_dual_uefi_bios)) ) {
 			if (!InstallSyslinux(DriveIndex, drive_name[0], fs)) {
 				FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_INSTALL_FAILURE;
@@ -1973,7 +2071,7 @@ DWORD WINAPI FormatThread(void* param)
 			safe_unlockclose(hLogicalVolume);
 		}
 	} else {
-		if (IsChecked(IDC_SET_ICON))
+		if (IsChecked(IDC_EXTENDED_LABEL))
 			SetAutorun(drive_name);
 	}
 	CHECK_FOR_USER_CANCEL;
@@ -1985,7 +2083,7 @@ DWORD WINAPI FormatThread(void* param)
 		goto out;
 	CHECK_FOR_USER_CANCEL;
 
-	if (IsChecked(IDC_BOOT)) {
+	if (bt != BT_NON_BOOTABLE) {
 		if ((bt == BT_MSDOS) || (bt == BT_FREEDOS)) {
 			UpdateProgress(OP_DOS, -1.0f);
 			PrintInfoDebug(0, MSG_230);
@@ -2001,7 +2099,7 @@ DWORD WINAPI FormatThread(void* param)
 				IsFileInDB(FILES_DIR "\\grub4dos-" GRUB4DOS_VERSION "\\grldr")?"✓":"✗");
 			if (!CopyFileU(FILES_DIR "\\grub4dos-" GRUB4DOS_VERSION "\\grldr", grub4dos_dst, FALSE))
 				uprintf("Failed to copy file: %s", WindowsErrorString());
-		} else if ((bt == BT_ISO) && (image_path != NULL)) {
+		} else if ((bt == BT_IMAGE) && (image_path != NULL) && (img_report.is_iso)) {
 			UpdateProgress(OP_DOS, 0.0f);
 			drive_name[2] = 0;	// Ensure our drive is something like 'D:'
 			if (windows_to_go) {
@@ -2029,7 +2127,7 @@ DWORD WINAPI FormatThread(void* param)
 				// EFI mode selected, with no 'boot###.efi' but Windows 7 x64's 'bootmgr.efi' (bit #0)
 				if ((tt == TT_UEFI) && HAS_WIN7_EFI(img_report)) {
 					PrintInfoDebug(0, MSG_232);
-					img_report.install_wim_path[0] = drive_name[0];
+					img_report.wininst_path[0][0] = drive_name[0];
 					efi_dst[0] = drive_name[0];
 					efi_dst[sizeof(efi_dst) - sizeof("\\bootx64.efi")] = 0;
 					if (!CreateDirectoryA(efi_dst, 0)) {
@@ -2037,7 +2135,7 @@ DWORD WINAPI FormatThread(void* param)
 						FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_CANT_PATCH);
 					} else {
 						efi_dst[sizeof(efi_dst) - sizeof("\\bootx64.efi")] = '\\';
-						if (!WimExtractFile(img_report.install_wim_path, 1, "Windows\\Boot\\EFI\\bootmgfw.efi", efi_dst)) {
+						if (!WimExtractFile(img_report.wininst_path[0], 1, "Windows\\Boot\\EFI\\bootmgfw.efi", efi_dst)) {
 							uprintf("Failed to setup Win7 EFI boot\n");
 							FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_CANT_PATCH);
 						}
@@ -2052,12 +2150,12 @@ DWORD WINAPI FormatThread(void* param)
 		}
 		UpdateProgress(OP_FINALIZE, -1.0f);
 		PrintInfoDebug(0, MSG_233);
-		if (IsChecked(IDC_SET_ICON))
+		if (IsChecked(IDC_EXTENDED_LABEL))
 			SetAutorun(drive_name);
 		// Issue another complete remount before we exit, to ensure we're clean
 		RemountVolume(drive_name);
 		// NTFS fixup (WinPE/AIK images don't seem to boot without an extra checkdisk)
-		if ((bt == BT_ISO) && (fs == FS_NTFS)) {
+		if ((bt == BT_IMAGE) && (img_report.is_iso) && (fs == FS_NTFS)) {
 			// Try to ensure that all messages from Checkdisk will be in English
 			if (PRIMARYLANGID(GetThreadUILanguage()) != LANG_ENGLISH) {
 				SetThreadUILanguage(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US));
@@ -2111,7 +2209,7 @@ DWORD WINAPI SaveImageThread(void* param)
 			NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
 		break;
 	default:
-		uprintf("invalid image type");
+		uprintf("Invalid image type");
 	}
 	if (hPhysicalDrive == INVALID_HANDLE_VALUE) {
 		FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_OPEN_FAILED;
@@ -2155,7 +2253,7 @@ DWORD WINAPI SaveImageThread(void* param)
 			(DWORD)MIN(img_save->BufSize, img_save->DeviceSize - wb), &rSize, NULL);
 		if (!s) {
 			FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_READ_FAULT;
-			uprintf("read error: %s", WindowsErrorString());
+			uprintf("Read error: %s", WindowsErrorString());
 			goto out;
 		}
 		if (rSize == 0)
@@ -2166,20 +2264,21 @@ DWORD WINAPI SaveImageThread(void* param)
 			PrintInfo(0, MSG_261, format_percent);
 			UpdateProgress(OP_FORMAT, format_percent);
 		}
-		for (i=0; i<WRITE_RETRIES; i++) {
+		for (i = 1; i <= WRITE_RETRIES; i++) {
 			CHECK_FOR_USER_CANCEL;
 			s = WriteFile(hDestImage, buffer, rSize, &wSize, NULL);
 			if ((s) && (wSize == rSize))
 				break;
 			if (s)
-				uprintf("write error: Wrote %d bytes, expected %d bytes\n", wSize, rSize);
+				uprintf("Write error: Wrote %d bytes, expected %d bytes", wSize, rSize);
 			else
-				uprintf("write error: %s", WindowsErrorString());
-			if (i < WRITE_RETRIES-1) {
+				uprintf("Write error: %s", WindowsErrorString());
+			if (i < WRITE_RETRIES) {
 				li.QuadPart = wb;
-				uprintf("  RETRYING...\n");
+				uprintf("Retrying in %d seconds...", WRITE_TIMEOUT / 1000);
+				Sleep(WRITE_TIMEOUT);
 				if (!SetFilePointerEx(hDestImage, li, NULL, FILE_BEGIN)) {
-					uprintf("write error: could not reset position - %s", WindowsErrorString());
+					uprintf("Write error: Could not reset position - %s", WindowsErrorString());
 					goto out;
 				}
 			} else {
@@ -2188,7 +2287,8 @@ DWORD WINAPI SaveImageThread(void* param)
 			}
 			Sleep(200);
 		}
-		if (i >= WRITE_RETRIES) goto out;
+		if (i > WRITE_RETRIES)
+			goto out;
 	}
 	if (wb != img_save->DeviceSize) {
 		uprintf("Error: wrote %s, expected %s", SizeToHumanReadable(wb, FALSE, FALSE),

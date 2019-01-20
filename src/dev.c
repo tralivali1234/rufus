@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Device detection and enumeration
- * Copyright © 2014-2017 Pete Batard <pete@akeo.ie>
+ * Copyright © 2014-2018 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,6 +32,7 @@
 #include <inttypes.h>
 #include <commctrl.h>
 #include <setupapi.h>
+#include <assert.h>
 
 #include "rufus.h"
 #include "missing.h"
@@ -84,8 +85,8 @@ static BOOL GetUSBProperties(char* parent_path, char* device_id, usb_device_prop
 		uprintf("Could not open hub %s: %s", parent_path, WindowsErrorString());
 		goto out;
 	}
-	memset(&conn_info, 0, sizeof(conn_info));
 	size = sizeof(conn_info);
+	memset(&conn_info, 0, size);
 	conn_info.ConnectionIndex = (ULONG)props->port;
 	// coverity[tainted_data_argument]
 	if (!DeviceIoControl(handle, IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX, &conn_info, size, &conn_info, size, &size, NULL)) {
@@ -105,8 +106,8 @@ static BOOL GetUSBProperties(char* parent_path, char* device_id, usb_device_prop
 
 	// In their great wisdom, Microsoft decided to BREAK the USB speed report between Windows 7 and Windows 8
 	if (nWindowsVersion >= WINDOWS_8) {
-		memset(&conn_info_v2, 0, sizeof(conn_info_v2));
 		size = sizeof(conn_info_v2);
+		memset(&conn_info_v2, 0, size);
 		conn_info_v2.ConnectionIndex = (ULONG)props->port;
 		conn_info_v2.Length = size;
 		conn_info_v2.SupportedUsbProtocols.Usb300 = 1;
@@ -141,8 +142,10 @@ BOOL ResetDevice(int index)
 		return FALSE;
 	}
 
-	if (DriveHub.String[index] == NULL)
+	if (DriveHub.String[index] == NULL) {
+		uprintf("The device you are trying to reset does not appear to be a USB device...");
 		return FALSE;
+	}
 
 	LastReset = GetTickCount64();
 
@@ -152,8 +155,8 @@ BOOL ResetDevice(int index)
 		goto out;
 	}
 
-	memset(&cycle_port, 0, sizeof(cycle_port));
 	size = sizeof(cycle_port);
+	memset(&cycle_port, 0, size);
 	cycle_port.ConnectionIndex = DrivePort[index];
 	uprintf("Cycling port %d (reset) on %s", DrivePort[index], DriveHub.String[index]);
 	// As per https://msdn.microsoft.com/en-us/library/windows/hardware/ff537340.aspx
@@ -162,6 +165,7 @@ BOOL ResetDevice(int index)
 		uprintf("  Failed to cycle port: %s", WindowsErrorString());
 		goto out;
 	}
+	uprintf("Please wait for the device to re-appear...");
 	r = TRUE;
 
 out:
@@ -306,9 +310,9 @@ BOOL GetOpticalMedia(IMG_SAVE* img_save)
 /* For debugging user reports of HDDs vs UFDs */
 //#define FORCED_DEVICE
 #ifdef FORCED_DEVICE
-#define FORCED_VID 0x056E
-#define FORCED_PID 0x8008
-#define FORCED_NAME "Generic- USB3.0 CRW   -SD USB Device"
+#define FORCED_VID 0x067B
+#define FORCED_PID 0x2731
+#define FORCED_NAME "SD Card Reader USB Device"
 #endif
 
 /*
@@ -449,16 +453,12 @@ BOOL GetDevices(DWORD devnum)
 		if (strcmp(genstor_name[s], "SD") == 0)
 			card_start = s;
 	}
-	// Overkill, but better safe than sorry. And yeah, we could have used
-	// arrays of arrays to avoid this, but it's more readable this way.
-	if ((uasp_start <= 0) || (uasp_start >= ARRAYSIZE(usbstor_name))) {
-		uprintf("Spock gone crazy error in %s:%d", __FILE__, __LINE__);
-		goto out;
-	}
-	if ((card_start <= 0) || (card_start >= ARRAYSIZE(genstor_name))) {
-		uprintf("Spock gone crazy error in %s:%d", __FILE__, __LINE__);
-		goto out;
-	}
+
+	// Better safe than sorry. And yeah, we could have used arrays of
+	// arrays to avoid this, but it's more readable this way.
+	assert((uasp_start > 0) && (uasp_start < ARRAYSIZE(usbstor_name)));
+	assert((card_start > 0) && (card_start < ARRAYSIZE(genstor_name)));
+
 	devid_list = NULL;
 	if (full_list_size != 0) {
 		full_list_size += 1;	// add extra NUL terminator
@@ -766,7 +766,7 @@ BOOL GetDevices(DWORD devnum)
 					uprintf("Device eliminated because it was detected as a Hard Drive (score %d > 0)", score);
 					if (!list_non_usb_removable_drives)
 						uprintf("If this device is not a Hard Drive, please e-mail the author of this application");
-					uprintf("NOTE: You can enable the listing of Hard Drives in 'Advanced Options' (after clicking the white triangle)");
+					uprintf("NOTE: You can enable the listing of Hard Drives under 'advanced drive properties'");
 					safe_closehandle(hDrive);
 					safe_free(devint_detail_data);
 					break;
@@ -845,8 +845,6 @@ BOOL GetDevices(DWORD devnum)
 		i = 0;
 	IGNORE_RETVAL(ComboBox_SetCurSel(hDeviceList, i));
 	SendMessage(hMainDialog, WM_COMMAND, (CBN_SELCHANGE<<16) | IDC_DEVICE, 0);
-	SendMessage(hMainDialog, WM_COMMAND, (CBN_SELCHANGE<<16) | IDC_FILESYSTEM,
-		ComboBox_GetCurSel(hFileSystem));
 	r = TRUE;
 
 out:

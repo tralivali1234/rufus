@@ -32,10 +32,6 @@
 #define LOC_RIGHT_TO_LEFT       0x00000001
 #define LOC_NEEDS_UPDATE        0x00000002
 
-// The [v]ersion major from a translation must match this number or
-// the translation will be ignored
-#define LOC_FRAMEWORK_VERSION  1
-
 #define MSG_RTF                 0x10000000
 #define MSG_MASK                0x0FFFFFFF
 
@@ -113,8 +109,6 @@ static __inline void list_del(struct list_head *entry)
 // The last command with a control ID *MUST* be LC_TEXT
 enum loc_command_type {
 	LC_GROUP,
-	LC_MOVE,
-	LC_SIZE,
 	LC_TEXT,	// Delimits commands that take a Control ID and commands that don't
 	LC_VERSION,
 	LC_LOCALE,
@@ -151,7 +145,7 @@ typedef struct loc_dlg_list_struct {
 	struct list_head list;
 } loc_dlg_list;
 
-extern const loc_parse parse_cmd[9];
+extern const loc_parse parse_cmd[7];
 extern struct list_head locale_list;
 extern char *default_msg_table[], *current_msg_table[], **msg_table;
 int loc_line_nr;

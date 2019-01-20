@@ -437,6 +437,19 @@ static __inline int ComboBox_GetLBTextU(HWND hCtrl, int index, char* lpString)
 	return size;
 }
 
+static __inline DWORD CharUpperBuffU(char* lpString, DWORD len)
+{
+	DWORD ret;
+	wchar_t *wlpString = calloc(len, sizeof(wchar_t));
+	if (wlpString == NULL)
+		return 0;
+	utf8_to_wchar_no_alloc(lpString, wlpString, len);
+	ret = CharUpperBuffW(wlpString, len);
+	wchar_to_utf8_no_alloc(wlpString, lpString, len);
+	free(wlpString);
+	return ret;
+}
+
 static __inline HANDLE CreateFileU(const char* lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
 								   LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
 								   DWORD dwFlagsAndAttributes,  HANDLE hTemplateFile)
@@ -497,6 +510,22 @@ static __inline int PathGetDriveNumberU(char* lpPath)
 	wfree(lpPath);
 	SetLastError(err);
 	return ret;
+}
+
+// This one is tricky since we can't blindly convert a
+// UTF-16 position to a UTF-8 one. So we do it manually.
+static __inline const char* PathFindFileNameU(const char* szPath)
+{
+	size_t i;
+	if (szPath == NULL)
+		return NULL;
+	for (i = strlen(szPath); i != 0; i--) {
+		if ((szPath[i] == '/') || (szPath[i] == '\\')) {
+			i++;
+			break;
+		}
+	}
+	return &szPath[i];
 }
 
 // This function differs from regular GetTextExtentPoint in that it uses a zero terminated string
@@ -652,7 +681,13 @@ static __inline DWORD GetFileAttributesU(const char* lpFileName)
 {
 	DWORD ret = 0xFFFFFFFF, err = ERROR_INVALID_DATA;
 	wconvert(lpFileName);
-	ret = GetFileAttributesW(wlpFileName);
+	// Unlike Microsoft's version, ours doesn't fail if the string is quoted
+	if ((wlpFileName[0] == L'"') && (wlpFileName[wcslen(wlpFileName) - 1] == L'"')) {
+		wlpFileName[wcslen(wlpFileName) - 1] = 0;
+		ret = GetFileAttributesW(&wlpFileName[1]);
+	} else {
+		ret = GetFileAttributesW(wlpFileName);
+	}
 	err = GetLastError();
 	wfree(lpFileName);
 	SetLastError(err);

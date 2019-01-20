@@ -1,30 +1,103 @@
-This file lists any change that has been applied to the en-US translation of
-rufus.loc since its original version. Translators are expected to keep their
-translations up to date by monitoring this file on regular basis and applying
-the same changes.
+This file lists all the changes that have been applied to the en-US translation of
+rufus.loc since its original version.
 
-When editing an existing translation, make sure you always follow:
+To edit a translation, please make sure to follow:
 https://github.com/pbatard/rufus/wiki/Localization#Editing_a_translation
+Or simply download the latest pollock.exe from https://rufus.ie/locale/ and follow
+its directions. 
 
-Remember to also update the version number for your translation ('v x.y.z')
-once you have matched all the changes that occurred for the en-US translation.
+o v3.x
+  - *NEW*      MSG_127 "Do not show this message again"
+  - *NEW*      MSG_128 "Important notice about Secure Boot"
+  - *NEW*      MSG_129 "You have just created a media that includes the UEFI:NTFS bootloader (...)"
 
-!!IMPORTANT!! The changes below may NOT contain the full message and only tell
-you WHERE, in the English translation, you should look to find the full message
-content. PLEASE, do not just look at this Changelog when updating your
-translation, but always use the English section of rufus.loc as your base.
-For instance, MSG_114, that was introduced in v1.0.8 is MORE than one line!
+o v3.2 (2018.07.20)
+	The following appears in Advanced format options → Check device for bad blocks → dropdown menu with
+  %s being replaced with SLC, MLC or TLC, which is a type of NAND (or flash memory. In other words,
+  this message should mean "for a flash memory device of type %s". *Please* try to keep the translation
+  as short as possible so that it won't result in an overly large dropdown...
+  See https://www.mydigitaldiscount.com/everything-you-need-to-know-about-slc-mlc-and-tlc-nand-flash.html
+  - *NEW*      MSG_087 "for %s NAND"
+  The following 4 messages can be tested using https://github.com/pbatard/rufus/raw/master/res/loc/test/casper_test.iso
+  - *NEW*      MSG_123 "Persistent partition size"
+  - *NEW*      MSG_124 "No persistence"
+  - *NEW*      MSG_125 "Set the size of the persistent partition for live USB media. Setting the size to 0 disables the persistent partition."
+  - *NEW*      MSG_126 "Set the partition size units."
+  As of Rufus 3.2, *ALL* downloads from the servers are digitally signed, and their signature is validated using the
+  public key that is embedded in the application. This message appears in an error dialog if the validation fails.
+  - *NEW*      MSG_172 "Invalid download signature"
+  This message was present in 3.0, but I forgot to mention it then. It has to do with the signature
+  validation that Rufus uses when downloading an update.
+  - *NEW*      MSG_240 "The signature for the downloaded update can not be validated (...)"
+  You can see this status message by pressing <Ctrl>-<Alt>-<Z> and then selecting Start.
+  It's the same as MSG_286 but with a process that *may* be faster, hence the name.
+  - *NEW*      MSG_306 "Fast-zeroing drive: %0.1f%% completed"
+  Note: Because this is the introduction of a new translation framework, and I am a bit short of time for that
+  unification of MSG_084/MSG_104/MSG_114/MSG_116 will happen in another translation round...
 
-o Version 1.0.22 (2017.07.17)
+o v3.0 (2018.03.27)
+  - All positioning ('m', 's') has now been removed as well as some controls, for the 3.0 UI redesign
+  - *NEW*      IDS_DRIVE_PROPERTIES_TXT "Drive Properties"
+  - *NEW*      IDS_BOOT_SELECTION_TXT "Boot selection"
+               Note: The current translation was taken from MSG_278 when available, which was for "Boot type".
+               However, "Boot selection", is more appropriate, so please update if it makes sense.
+  - *NEW*      IDC_SELECT "Select"
+  - *NEW*      IDS_IMAGE_OPTION_TXT "Image Option"
+  - *UPDATED*  IDS_PARTITION_TYPE_TXT Partition scheme and target system type -> "Partition scheme"
+  - *NEW*      IDS_TARGET_SYSTEM_TXT "Target system"
+  - *REPLACED* IDS_LABEL_TXT "New Volume label" -> "Volume label"
+  - *NEW*      IDS_STATUS_TXT "Status"
+  - *REPLACED* MSG_031 -> "BIOS (or UEFI-CSM)"
+  - *REPLACED* MSG_032 -> "UEFI (non CSM)"
+  - *REPLACED* MSG_033 -> "BIOS or UEFI" 
+  - *REMOVED*  MSG_087
+  - *RENAMED*  IDC_WINDOWS_INSTALL -> MSG_117
+  - *RENAMED*  IDC_WINDOWS_TO_GO -> MSG_118
+               Note: In most cases, you should not have to add MSG_118 as the English for "Windows To Go" should work for most countries.
+  - *NEW*      MSG_119 "advanced drive properties"
+  - *NEW*      MSG_120 "advanced format options"
+  - *NEW*      MSG_121 "Show %s"
+  - *NEW*      MSG_122 "Hide %s"
+     MSG_119/120 + MSG_121/122 are used to create the advanced options clickable toolbars
+  - *REPLACED* MSG_150 -> "Type of computer you plan to use this bootable drive with. It is your responsibility to determine whether "
+                          "your target is of BIOS or UEFI type before you start creating the drive, as it may fail to boot otherwise."
+  - *REPLACED* MSG_151 -> "'UEFI-CSM' means that the device will only boot in BIOS emulation mode (also known as 'Legacy Mode') under UEFI, and not in native UEFI mode."
+               Be mindful that you probably don't want to translate 'Legacy Mode' as this is an option that usually appears in English in the UEFI settings.
+  - *REPLACED* MSG_152 -> "'non CSM' means that the device will only boot in native UEFI mode, and not in BIOS emulation mode (also known as 'Legacy Mode')."
+  - *REPLACED* MSG_163 -> "Method that will be used to create partitions"
+  - *REMOVED*  MSG_172
+  - *REMOVED*  MSG_199
+  - *REMOVED*  MSG_200
+  - *NEW*      MSG_278 "Checking for conflicting processes..."
+  - *REPLACED* MSG_280 "Image selection" -> "Disk or ISO image"
+  - *REPLACED* MSG_281 "(Please select an image)" -> "%s (Please select)"
+     MSG_281 + MSG_280 are used to create the message that appears in the boot selection dropdown when an image has not been selected.
+  - *UPDATED*  MSG_298 The '#' button is now the (✓) button
+  - *NEW*      MSG_299 "Timestamp validation error"
+  - *NEW*      MSG_300 "Rufus could not validate that the timestamp of the downloaded update is more recent than the one for the "
+                       "current executable.\n\nIn order to prevent potential attack scenarios, the update process has been aborted and "
+                       "the download will be deleted. Please check the log for more details."
+  - *NEW*      MSG_301 "Show application settings"
+  - *NEW*      MSG_302 "Show information about this application"
+  - *NEW*      MSG_303 "Show the log"
+  - *NEW*      MSG_304 "Create a disk image of the selected device"
+  - *NEW*      MSG_305 "Use this option to indicate whether you want to use this device to install Windows on another disk, "
+                        "or if you want to run Windows directly from this drive (Windows To Go)."
+  - *UPDATED*  On IDD_LOG, IDC_LOG_CLEAR, IDC_LOG_SAVE and IDCANCEL were updated to remove the redundant mention of "Log" in the buttons
+               for the languages who did that. This means that "Save Log", "Clear Log" "Close Log" have become "Save", "Clear", "Close".
+               *PLEASE* verify that the modification looks correct in your language.
+
+o v2.16 (2017.07.17)
   - *NEW* MSG_295 "Warning: Unofficial version"
   - *NEW* MSG_296 "This version of Rufus was NOT produced by its official developer(s).\n\nAre you sure you want to run it?"
   - *NEW* MSG_297 "Truncated ISO detected"
   - *NEW* MSG_298 "The ISO file you have selected does not match its declared size: %s of data is missing!\n\nIf you obtained "
     "this file from the Internet, you should try to download a new copy and verify that the MD5 or SHA checksums match the "
     "official ones.\n\nNote that you can compute the MD5 or SHA in Rufus by clicking the '#' button."
-  Note: You can test MSG_297/MSG_298 using https://rufus.akeo.ie/testing/arch_trunc.iso (A truncated version of archlinux-2017.07.01-x86_64.iso)
+  Note: You can test MSG_297/MSG_298 using https://github.com/pbatard/rufus/raw/master/res/loc/test/arch_trunc.iso
+  A truncated version of archlinux-2017.07.01-x86_64.iso)
 
-o Version 1.0.21 (2017.01.16)
+o v2.12 (2017.01.16)
   - *NEW* MSG_288 "Missing elevated privileges"
   - *NEW* MSG_289 "This application can only run with elevated privileges"
     This message, along with the previous, is just to notify the user when they have
@@ -46,7 +119,7 @@ o Version 1.0.21 (2017.01.16)
   - *NEW* MSG_294 "This version of Windows is no longer supported by Rufus."
     These two messages are not used anywhere yet, but may be needed in a future prompt.
 
-o Version 1.0.20 (2016.05.09)
+o v2.9 (2016.05.09)
   - *NEW* MSG_286 "Zeroing drive: %0.1f%% completed"
     Used when filling a whole drive with zero bytes, to display progress in percent (e.g. "Zeroing drive: 12.3% completed")
     Can be tested with Alt-Z (CAUTION: THIS WILL COMPLETELY ERASE THE SELECTED DRIVE!!)
@@ -54,7 +127,7 @@ o Version 1.0.20 (2016.05.09)
     Note, this message is followed by either "enabled"/"disabled" (see MSG_250/251) and is similar to MSG_253
     The message appears on the status bar and can be tested with Ctrl-Alt-F.
 
-o Version 1.0.19 (2015.10.15)
+o v2.5 (2015.10.15)
     Note: The following message can be tested by pressing Alt-, (That's the 'Alt' and 'comma' keys on your keyboard)
           In case the message below is not clear, you can consider that it says "Exclusive locking of the USB drive"
   - *NEW* MSG_282 "Exclusive USB drive locking"
@@ -65,7 +138,7 @@ o Version 1.0.19 (2015.10.15)
   - *NEW* MSG_285 "The downloaded executable is signed by '%s'.\nThis is not a signature we recognize and could "
                   "indicate some form of malicious activity...\nAre you sure you want to run this file?"
 
-o Version 1.0.18 (2015.09.03)
+o v2.4 (2015.09.03)
   - Changed MSG_081 "Unsupported ISO" -> "Unsupported image"
   - Changed MSG_082 -> "This image is either non-bootable, or it uses a boot or compression method that is not supported by Rufus..."
   - *NEW* MSG_269 "Preserve timestamps"
@@ -80,7 +153,7 @@ o Version 1.0.18 (2015.09.03)
     Note: You can see the message above by hovering on the language button
   - *NEW* MSG_274 "ISOHybrid image detected"
     Note: You can test this message and the one below by downloading and trying to write the latest menu_c32_test.iso (120 KB) from:
-    https://github.com/pbatard/rufus/raw/master/res/localization/menu_c32_test.iso
+    https://github.com/pbatard/rufus/raw/master/res/loc/test/menu_c32_test.iso
 	- *NEW* MSG_275 "The image you have selected is..." [TRANSLATORS: Please refer to the English section of 'rufus.loc' for the FULL message]
 	  For more info on the messages below, also see the comments in the English section of rufus.loc
   - *NEW* MSG_276 "Write in %s mode (Recommended)"
@@ -90,11 +163,11 @@ o Version 1.0.18 (2015.09.03)
   - *NEW* MSG_280 "Image selection"
   - *NEW* MSG_281 "(Please select an image)"
 
-o Version 1.0.17 (2015.02.04)
+o v2.0 (2015.02.04)
   - *NEW CONTROL* IDC_WINDOWS_INSTALL "Standard Windows installation" (Main dialog)
   - *NEW CONTROL* IDC_WINDOWS_TO_GO "Windows To Go" (Main dialog)
-  Note: to see the 2 controls above displayed, you will need to load the "Windows To Go.iso" image from
-  https://github.com/pbatard/rufus/raw/master/res/localization/Windows%20To%20Go.iso (356 KB)
+  Note: to see the 2 controls above displayed, you will need to load the "windows_to_go.iso" image from
+  https://github.com/pbatard/rufus/raw/master/res/loc/test/windows_to_go.iso (356 KB)
   Also see the comment for IDC_WINDOWS_TO_GO in the English translation.
   - *NEW* MSG_096 "The file system currently selected can not be used with this type of ISO (...)"
   - *NEW* MSG_097 "'Windows To Go' can only be applied if the file system is NTFS."

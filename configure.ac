@@ -1,4 +1,4 @@
-AC_INIT([rufus], [2.18], [https://github.com/pbatard/rufus/issues], [rufus], [https://rufus.akeo.ie])
+AC_INIT([rufus], [3.5], [https://github.com/pbatard/rufus/issues], [rufus], [https://rufus.ie])
 AM_INIT_AUTOMAKE([-Wno-portability foreign no-dist no-dependencies])
 AC_CONFIG_SRCDIR([src/rufus.c])
 AC_CONFIG_MACRO_DIR([m4])
@@ -19,7 +19,7 @@ AC_DEFINE([_GNU_SOURCE], [], [Use GNU extensions])
 
 AM_CFLAGS="${AM_CFLAGS} -DWINVER=0x601 -D_WIN32_WINNT=0x601 -D_WIN32_IE=0x800"
 # "-Wl,--nxcompat" to enable DEP (Data Execution Prevention)
-AM_LDFLAGS="${AM_LDFLAGS} -Wl,-no-undefined -Wl,--nxcompat"
+AM_LDFLAGS="${AM_LDFLAGS} -Wl,-no-undefined -Wl,--nxcompat -Wl,--no-insert-timestamp"
 
 # Debug symbols
 AC_ARG_ENABLE([debug],
@@ -62,7 +62,7 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([])],
 	[nopointersign_cflags="-Wno-pointer-sign"], [nopointersign_cflags=""])
 CFLAGS="${saved_CFLAGS}"
 
-AM_CFLAGS="$AM_CFLAGS -DUNICODE -D_UNICODE -std=gnu99 -Wshadow -Wall -Wundef -Wunused -Wstrict-prototypes -Werror-implicit-function-declaration $nopointersign_cflags"
+AM_CFLAGS="$AM_CFLAGS -DUNICODE -D_UNICODE -UNDEBUG -DCOBJMACROS -std=gnu99 -Wshadow -Wall -Wundef -Wunused -Wstrict-prototypes -Wno-restrict -Werror-implicit-function-declaration $nopointersign_cflags"
 
 AC_SUBST([VISIBILITY_CFLAGS])
 AC_SUBST([AM_CFLAGS])
@@ -75,7 +75,7 @@ AC_CONFIG_FILES([src/bled/Makefile])
 AC_CONFIG_FILES([src/libcdio/iso9660/Makefile])
 AC_CONFIG_FILES([src/libcdio/udf/Makefile])
 AC_CONFIG_FILES([src/libcdio/driver/Makefile])
-AC_CONFIG_FILES([res/localization/Makefile])
+AC_CONFIG_FILES([res/loc/Makefile])
 AC_CONFIG_FILES([src/ms-sys/Makefile])
 AC_CONFIG_FILES([src/syslinux/libfat/Makefile])
 AC_CONFIG_FILES([src/syslinux/libinstaller/Makefile])
